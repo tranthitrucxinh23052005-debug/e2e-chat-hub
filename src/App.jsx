@@ -184,9 +184,8 @@ export default function App() {
 
   // === GIAO DIỆN CHAT CHÍNH ===
   return (
-    <div className={`min-h-screen flex flex-col font-sans ${getThemeClass()} transition-colors duration-200`}>
-      {/* HEADER */}
-      <header className="p-3 border-b flex justify-between items-center bg-white/5 shadow-sm backdrop-blur-md relative z-20">
+<div className={`h-screen overflow-hidden flex flex-col font-sans ${getThemeClass()} transition-colors duration-200`}>      {/* HEADER */}
+      <header className="p-3 border-b flex justify-between items-center bg-white/5 shadow-sm backdrop-blur-md relative z-50">
         <div className="flex items-center gap-3">
           <img src={avatar} alt="Avatar" className="w-11 h-11 rounded-full border-2 border-white shadow-sm object-cover bg-white" 
                onError={(e) => { e.target.src = 'https://via.placeholder.com/40'; }}/>
@@ -225,8 +224,8 @@ export default function App() {
             </button>
             
             {showSettings && (
-              <div className="absolute right-0 mt-3 w-72 bg-white text-gray-800 border shadow-2xl rounded-xl p-4 z-50 text-sm">
-                <h3 className="font-bold mb-3 border-b pb-2 text-xs text-blue-600 tracking-wide">TÙY CHỈNH SIÊU XỊN CHO TS</h3>
+              <div className="absolute right-0 mt-3 w-72 bg-white text-gray-800 border shadow-2xl rounded-xl p-4 z-50 text-sm max-h-[60vh] overflow-y-auto">
+                <h3 className="font-bold mb-3 border-b pb-2 text-xs text-blue-600 tracking-wide">TÙY CHỈNH </h3>
                 
                 {/* Chọn màu tin nhắn */}
                 <div className="mb-4 flex justify-between items-center">
