@@ -297,7 +297,7 @@ export default function App() {
 
       {/* KHU VỰC CHAT CHÍNH */}
       <main 
-        className="flex-1 overflow-y-auto p-4 space-y-4 relative" 
+        className="h-full flex-1 overflow-y-auto p-4 space-y-4 relative z-0" 
         style={{ 
           backgroundImage: chatBg, 
           backgroundSize: 'cover', 
@@ -306,7 +306,7 @@ export default function App() {
           backgroundColor: theme === 'dark' ? '#111827' : (theme === 'eyecare' ? '#e8dfc8' : '#ffffff')
         }}
       >
-        {chatBg && <div className="absolute inset-0 bg-white/70 dark:bg-black/70 pointer-events-none z-0"></div>}
+        
 
         <div className="relative z-10 space-y-5">
           {filteredMessages.length === 0 && searchQuery && (
