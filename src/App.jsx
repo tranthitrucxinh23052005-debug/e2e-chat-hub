@@ -218,9 +218,13 @@ export default function App() {
     if (theme === 'eyecare') return 'bg-[#f4ecd8] text-[#5c4b37] border-[#d1c6ab]';
     return 'bg-gray-50 text-gray-900 border-gray-200';
   };
-
+// Lọc theo từ khóa, sau đó GỘP CHUNG với tin nhắn hệ thống và SẮP XẾP LẠI TỪ A-Z THEO THỜI GIAN
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
-  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => a.timestamp - b.timestamp);
+  
+  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => {
+    // Ép kiểu về số (Number) để phòng hờ Firebase trả về định dạng chuỗi
+    return Number(a.timestamp) - Number(b.timestamp);
+  });;
 
   if (!isLoggedIn) {
     return (
