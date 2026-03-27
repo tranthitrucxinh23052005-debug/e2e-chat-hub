@@ -105,7 +105,7 @@ export default function App() {
 
         if (!blockedUsers.includes(msgData.sender)) {
           try {
-            console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
+            console.log("%c[INBOUND] - Dữ liệu tiếp nhận", "color: #047857; font-weight: bold; font-size: 11px;");
             console.log(`SENDER     : ${msgData.sender}`);
             console.log(`TIMESTAMP  : ${msgData.timestamp}`);
             console.log(`AES-256    : ${msgData.text}`);
@@ -118,7 +118,7 @@ export default function App() {
               senderAvatar: msgData.avatar,
               text: decryptedText,
               rawText: msgData.text,
-              timestamp: msgData.timestamp || Date.now(), // Fallback chớp nhoáng lúc vừa bấm gửi
+              timestamp: msgData.timestamp || Date.now(),
               isMine: msgData.sender === currentMyId
             });
           } catch (error) {}
@@ -211,8 +211,7 @@ export default function App() {
 
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
   
-  // XẾP HÀNG CHUẨN ĐÉT VỚI HÀM SẮP XẾP SỐ
-  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+ const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
 
   if (!isLoggedIn) {
     return (
@@ -225,11 +224,11 @@ export default function App() {
           <h2 className="text-xs font-bold mb-8 text-blue-500 uppercase tracking-widest bg-blue-50 inline-block px-3 py-1 rounded-full">Hệ thống nhắn tin bảo mật</h2>
           <form onSubmit={handleLogin} className="space-y-5">
             <div className="text-left">
-              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Định danh người dùng (Không nhập trùng)</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Tên đăng nhập </label>
               <input type="text" className="w-full px-5 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50" value={username} onChange={(e) => setUsername(e.target.value)} required />
             </div>
             <div className="text-left">
-              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Khóa mật mã hệ thống</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Khóa phòng</label>
               <input type="password" className="w-full px-5 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50" value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
             <button type="submit" className="w-full bg-blue-700 text-white py-3.5 rounded-xl hover:bg-blue-800 transition-colors font-bold text-lg shadow-md hover:shadow-lg mt-2">Truy cập hệ thống</button>
@@ -250,7 +249,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h2 className="font-bold text-base">{nickname || username}</h2>
-              <button onClick={() => { const newName = prompt("Thiết lập định danh mới:", nickname); if(newName) setNickname(newName); }} className="text-gray-400 hover:text-blue-500 transition-colors"><Edit3 size={14} /></button>
+              <button onClick={() => { const newName = prompt("Đổi tên đăng nhập:", nickname); if(newName) setNickname(newName); }} className="text-gray-400 hover:text-blue-500 transition-colors"><Edit3 size={14} /></button>
             </div>
             <p className="text-[10px] opacity-70 flex items-center gap-1 text-green-500 font-medium"><Shield size={10} /> Đã mã hóa kênh truyền</p>
           </div>
@@ -259,7 +258,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="relative hidden md:block">
             <Search size={14} className="absolute left-3 top-2.5 opacity-40" />
-            <input type="text" placeholder="Truy vấn dữ liệu..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-9 pr-4 py-2 text-xs border border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white/50 w-48 transition-all focus:w-64" />
+            <input type="text" placeholder="Tìm kiếm tin nhắn..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-9 pr-4 py-2 text-xs border border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white/50 w-48 transition-all focus:w-64" />
           </div>
           <div className="h-6 w-px bg-gray-300/50 mx-1"></div>
           <button onClick={() => setTheme('light')} className="p-1.5 rounded-full hover:bg-gray-200/50 opacity-70 hover:opacity-100 transition-all"><Sun size={18} /></button>
@@ -283,7 +282,7 @@ export default function App() {
                   )}
                 </div>
                 <div className="mb-4">
-                  <span className="block mb-2 font-medium text-xs">Dữ liệu định danh (Avatar):</span>
+                  <span className="block mb-2 font-medium text-xs">Avatar:</span>
                   <div className="grid grid-cols-5 gap-1.5 max-h-28 overflow-y-auto border border-gray-100 p-1.5 rounded-lg bg-gray-50">
                     {AVATARS.map((img, idx) => <img key={idx} src={img} alt={`Avt ${idx+1}`} onClick={() => setAvatar(img)} className={`w-full aspect-square object-cover rounded-md cursor-pointer border-2 transition-transform hover:scale-110 ${avatar === img ? 'border-blue-500 ring-2 ring-blue-300' : 'border-transparent'}`} onError={(e) => { e.target.src = 'https://via.placeholder.com/30'; }} />)}
                   </div>
@@ -384,13 +383,12 @@ export default function App() {
           <div className="flex items-center gap-4">
             <img src="/assets/logo.png" alt="HUB Logo" className="w-10 h-10 grayscale opacity-60" onError={(e) => { e.target.style.display = 'none'; }} />
             <div>
-              <p className="font-bold text-sm mb-0.5 text-gray-900 dark:text-gray-200">Đại học Ngân hàng TP.HCM (HUB)</p>
-              <p className="font-medium text-blue-700 dark:text-blue-400">Khoa Hệ thống Thông tin Quản lý</p>
-              <p>Ngành Khoa học Dữ liệu trong Kinh doanh</p>
+              <p className="font-bold text-sm mb-0.5 text-gray-900 dark:text-gray-200">Trường Đại học Ngân hàng TP.HCM (HUB)</p>
+              <p className="font-medium text-blue-700 dark:text-blue-400">Khoa Khoa học dữ liệu trong kinh doanh</p>
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5 text-right font-medium">
-            <p className="flex items-center gap-1.5"><MapPin size={12} className="text-gray-400" /> 36 Tôn Thất Đạm, Q.1 | 56 Hoàng Diệu 2, TP.Thủ Đức</p>
+            <p className="flex items-center gap-1.5"><MapPin size={12} className="text-gray-400" /> 36 Tôn Thất Đạm, Q.1 | 56 Hoàng Diệu 2, Thủ Đức TP. HCM</p>
             <p className="flex items-center gap-1.5"><Phone size={12} className="text-gray-400" /> (028) 38 291 901</p>
             <p className="flex items-center gap-1.5"><Globe size={12} className="text-gray-400" /> <a href="https://hub.edu.vn" target="_blank" rel="noreferrer" className="hover:text-blue-600 transition-colors">hub.edu.vn</a></p>
           </div>
