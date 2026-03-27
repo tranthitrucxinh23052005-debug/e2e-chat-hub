@@ -6,8 +6,7 @@ import {
   MoreVertical, Volume2, VolumeX, Ban, Edit3, MapPin, Phone, Globe
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-// Đã triệu hồi thêm serverTimestamp để chống lệch giờ giữa 2 máy
-import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved, serverTimestamp } from 'firebase/database';
+import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved } from 'firebase/database';
 
 const firebaseConfig = {
   apiKey: "AIzaSyCK-n-_VqT3tggUy_4WyjIg9h3U2xiFgWI",
@@ -49,7 +48,9 @@ export default function App() {
   
   const messagesEndRef = useRef(null);
   const roomDisconnectRef = useRef(null);
-  const currentCountRef = useRef(0);
+  
+  // Radar đo độ lệch thời gian giữa máy TS và Firebase
+  const serverTimeOffsetRef = useRef(0); 
   const prefsRef = useRef({ isMuted, selectedSound, blockedUsers, nickname, username });
 
   useEffect(() => {
@@ -59,6 +60,12 @@ export default function App() {
   useEffect(() => {
     if (!isLoggedIn || !password) return;
 
+    // 1. Kích hoạt Radar đo độ lệch thời gian
+    const offsetRef = ref(db, ".info/serverTimeOffset");
+    const unsubOffset = onValue(offsetRef, (snap) => {
+      serverTimeOffsetRef.current = snap.val() || 0;
+    });
+
     const roomId = CryptoJS.SHA256(password).toString();
     const myId = username; 
     
@@ -66,42 +73,44 @@ export default function App() {
     const presenceRef = ref(db, `rooms/${roomId}/presence`);
     const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
 
+    let currentCount = 0; 
+
     set(myPresenceRef, true);
     onDisconnect(myPresenceRef).remove();
-    roomDisconnectRef.current = onDisconnect(roomMsgRef);
 
     const unsubJoin = onChildAdded(presenceRef, (snap) => {
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ID ${snap.key} vừa tham gia phòng.` }]);
+        // Cộng thêm độ lệch để ra Giờ Toàn Cầu
+        const globalTime = Date.now() + serverTimeOffsetRef.current;
+        setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${globalTime}`, type: 'system', timestamp: globalTime, text: `👋 ID ${snap.key} vừa tham gia phòng.` }]);
       }
     });
 
     const unsubLeave = onChildRemoved(presenceRef, (snap) => {
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ID ${snap.key} đã ngắt kết nối.` }]);
+        const globalTime = Date.now() + serverTimeOffsetRef.current;
+        setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${globalTime}`, type: 'system', timestamp: globalTime, text: `🚪 ID ${snap.key} đã ngắt kết nối.` }]);
       }
     });
 
+    roomDisconnectRef.current = onDisconnect(roomMsgRef);
+    
     const unsubPresence = onValue(presenceRef, (snap) => {
-      currentCountRef.current = snap.size; 
-      if (currentCountRef.current <= 1) {
+      currentCount = snap.size; 
+      if (currentCount <= 1) {
         roomDisconnectRef.current.remove(); 
       } else {
         roomDisconnectRef.current.cancel(); 
       }
     });
 
-    // Ép hệ thống dùng chuẩn xếp hàng của máy chủ
     onValue(roomMsgRef, (snapshot) => {
-      const { blockedUsers, username: currentUn, isMuted, selectedSound } = prefsRef.current;
-      const loadedMessages = [];
-
-      // Dùng forEach để bốc tin nhắn theo đúng thứ tự thời gian sinh ra
-      snapshot.forEach((childSnapshot) => {
-        const key = childSnapshot.key;
-        const msgData = childSnapshot.val();
-
-        if (!blockedUsers.includes(msgData.sender)) {
+      const data = snapshot.val();
+      if (data) {
+        const { blockedUsers, username: currentUn, isMuted, selectedSound } = prefsRef.current;
+        
+        const loadedMessages = Object.entries(data).map(([key, msgData]) => {
+          if (blockedUsers.includes(msgData.sender)) return null;
           try {
             console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
             console.log(`SENDER     : ${msgData.sender}`);
@@ -110,42 +119,53 @@ export default function App() {
             console.log("--------------------------------------------------");
 
             const decryptedText = decryptMessage(msgData.text, password);
-            loadedMessages.push({
+            return {
               id: key,
               sender: msgData.sender,
               senderAvatar: msgData.avatar,
               text: decryptedText,
               rawText: msgData.text,
-              timestamp: msgData.timestamp || Date.now(),
-              // Tuyệt chiêu khóa mục tiêu: Xác định chính chủ bằng UID đăng nhập thay vì tên hiển thị
+              timestamp: Number(msgData.timestamp) || (Date.now() + serverTimeOffsetRef.current),
               isMine: (msgData.uid === currentUn) || (!msgData.uid && msgData.sender === currentUn)
-            });
-          } catch (error) {}
-        }
-      });
+            };
+          } catch (error) {
+            return null;
+          }
+        }).filter(Boolean);
 
-      setMessages(loadedMessages);
-      
-      const lastMsg = loadedMessages[loadedMessages.length - 1];
-      if (lastMsg && !lastMsg.isMine && !isMuted) {
-         const audio = new Audio(selectedSound);
-         audio.play().catch(e => {});
+        setMessages(loadedMessages);
+        
+        const lastMsg = loadedMessages[loadedMessages.length - 1];
+        if (lastMsg && !lastMsg.isMine && !isMuted) {
+           const audio = new Audio(selectedSound);
+           audio.play().catch(e => {});
+        }
+      } else {
+        setMessages([]);
       }
     });
 
     const handleUnload = () => {
-      if (currentCountRef.current <= 1) remove(roomMsgRef);
+      if (currentCount <= 1) {
+        remove(roomMsgRef);
+        remove(presenceRef);
+      }
       remove(myPresenceRef);
     };
     window.addEventListener('beforeunload', handleUnload);
 
     return () => {
+      off(offsetRef);
       off(roomMsgRef);
       off(presenceRef);
       window.removeEventListener('beforeunload', handleUnload);
-      if (currentCountRef.current <= 1) remove(roomMsgRef);
+      
+      if (currentCount <= 1) {
+        remove(roomMsgRef);
+        remove(presenceRef);
+      }
       remove(myPresenceRef);
-      if (roomDisconnectRef.current) roomDisconnectRef.current.cancel();
+      roomDisconnectRef.current.cancel();
     };
   }, [isLoggedIn, password]);
 
@@ -165,18 +185,21 @@ export default function App() {
     e.preventDefault();
     if (!inputMsg.trim()) return;
 
+    // TÍNH TOÁN GIỜ TOÀN CẦU NGAY TRƯỚC KHI GỬI
+    const globalTimestamp = Date.now() + serverTimeOffsetRef.current;
     const encryptedText = encryptMessage(inputMsg, password);
     
     const msgPayload = {
-      uid: username, // Khóa cứng ID nhận dạng
+      uid: username, 
       sender: nickname || username,
       avatar: avatar,
       text: encryptedText,
-      timestamp: serverTimestamp() // Dùng giờ chuẩn của vệ tinh máy chủ Firebase
+      timestamp: globalTimestamp 
     };
 
     console.log("%c[OUTBOUND] - DỮ LIỆU ĐÃ MÃ HÓA TẠI THIẾT BỊ GỬI", "color: #b45309; font-weight: bold; font-size: 11px;");
     console.log(`SENDER     : ${msgPayload.sender}`);
+    console.log(`TIMESTAMP  : ${msgPayload.timestamp}`);
     console.log(`AES-256    : ${msgPayload.text}`);
     console.log("--------------------------------------------------");
 
@@ -202,6 +225,8 @@ export default function App() {
   };
 
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
+  
+  // XẾP HÀNG NGHIÊM CHỈNH DỰA TRÊN GIỜ TOÀN CẦU 
   const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
 
   if (!isLoggedIn) {
@@ -376,7 +401,7 @@ export default function App() {
             <div>
               <p className="font-bold text-sm mb-0.5 text-gray-900 dark:text-gray-200">Đại học Ngân hàng TP.HCM (HUB)</p>
               <p className="font-medium text-blue-700 dark:text-blue-400">Khoa Hệ thống Thông tin Quản lý</p>
-              <p>Ngành Khoa học Dữ liệu trong Kinh doanh</p>
+              <p>Khoa học Dữ liệu trong Kinh doanh</p>
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5 text-right font-medium">
