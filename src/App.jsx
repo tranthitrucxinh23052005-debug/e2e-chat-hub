@@ -6,9 +6,9 @@ import {
   MoreVertical, Volume2, VolumeX, Ban, Edit3, MapPin, Phone, Globe
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, push, onValue, off } from 'firebase/database';
+// Đã thêm các công cụ kết nối thời gian thực và tự động hủy (onDisconnect)
+import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved } from 'firebase/database';
 
-// Cấu hình mạng Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyCK-n-_VqT3tggUy_4WyjIg9h3U2xiFgWI",
   authDomain: "e2e-chat-hub.firebaseapp.com",
@@ -32,6 +32,7 @@ export default function App() {
   const [password, setPassword] = useState('');
 
   const [messages, setMessages] = useState([]);
+  const [systemLogs, setSystemLogs] = useState([]); // Trạng thái mới: Lưu trữ thông báo hệ thống
   const [inputMsg, setInputMsg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -47,30 +48,73 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   
   const messagesEndRef = useRef(null);
+  const roomDisconnectRef = useRef(null); // Biến tham chiếu lưu lệnh hủy diệt phòng
 
-  // Giao thức kết nối dữ liệu liên mạng qua Firebase
   useEffect(() => {
     if (isLoggedIn && password) {
       const roomId = CryptoJS.SHA256(password).toString();
-      const roomRef = ref(db, `rooms/${roomId}/messages`);
+      const myId = nickname || username;
       
-      onValue(roomRef, (snapshot) => {
+      const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
+      const presenceRef = ref(db, `rooms/${roomId}/presence`);
+      const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
+
+      // 1. Đăng ký sự hiện diện của bản thân và cài đặt tự động xóa tên khi tắt web
+      set(myPresenceRef, true);
+      onDisconnect(myPresenceRef).remove();
+
+      // 2. Lắng nghe radar: Có người mới lẻn vào phòng
+      const unsubJoin = onChildAdded(presenceRef, (snap) => {
+        if (snap.key !== myId) {
+          setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ${snap.key} vừa tham gia phòng bí mật.` }]);
+        }
+      });
+
+      // 3. Lắng nghe radar: Có người rón rén rời khỏi phòng
+      const unsubLeave = onChildRemoved(presenceRef, (snap) => {
+        if (snap.key !== myId) {
+          setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ${snap.key} đã ngắt kết nối và rời đi.` }]);
+        }
+      });
+
+      // 4. MẬT VỤ AUTO-DELETE: Đếm số người để kích hoạt tự hủy
+      roomDisconnectRef.current = onDisconnect(roomMsgRef); // Lên nòng sẵn lệnh xóa toàn bộ tin nhắn
+      
+      const unsubPresence = onValue(presenceRef, (snap) => {
+        const count = snap.size; 
+        if (count <= 1) {
+          // Báo động: Phòng chỉ còn 1 người. Nếu người này đi, hãy nổ tung dữ liệu! 💥
+          roomDisconnectRef.current.remove();
+        } else {
+          // An toàn: Trong phòng vẫn đang đông người, thu hồi lệnh nổ đi. 🛑
+          roomDisconnectRef.current.cancel();
+        }
+      });
+
+      // 5. Lắng nghe tin nhắn như cũ
+      onValue(roomMsgRef, (snapshot) => {
         const data = snapshot.val();
         if (data) {
           const loadedMessages = Object.entries(data).map(([key, msgData]) => {
             if (blockedUsers.includes(msgData.sender)) return null;
             try {
+              console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
+              console.log(`SENDER     : ${msgData.sender}`);
+              console.log(`TIMESTAMP  : ${msgData.timestamp}`);
+              console.log(`AES-256    : ${msgData.text}`);
+              console.log("--------------------------------------------------");
+
               const decryptedText = decryptMessage(msgData.text, password);
               return {
                 id: key,
                 sender: msgData.sender,
                 senderAvatar: msgData.avatar,
                 text: decryptedText,
-                rawText: msgData.text, // Trích xuất bản mã nguyên thủy
-                isMine: msgData.sender === (nickname || username)
+                rawText: msgData.text,
+                timestamp: msgData.timestamp || 0, // Lưu lại thời gian để trộn chung với thông báo hệ thống
+                isMine: msgData.sender === myId
               };
             } catch (error) {
-              console.error("Lỗi giải mã:", error);
               return null;
             }
           }).filter(Boolean);
@@ -80,20 +124,26 @@ export default function App() {
           const lastMsg = loadedMessages[loadedMessages.length - 1];
           if (lastMsg && !lastMsg.isMine && !isMuted) {
              const audio = new Audio(selectedSound);
-             audio.play().catch(e => console.warn("Lỗi phát âm thanh:", e));
+             audio.play().catch(e => {});
           }
         } else {
           setMessages([]);
         }
       });
 
-      return () => off(roomRef);
+      // Dọn dẹp chiến trường khi người dùng tự đăng xuất
+      return () => {
+        off(roomMsgRef);
+        off(presenceRef);
+        remove(myPresenceRef);
+        roomDisconnectRef.current.cancel();
+      };
     }
   }, [isLoggedIn, password, blockedUsers, isMuted, selectedSound, nickname, username]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, systemLogs]);
 
   const handleLogin = (e) => {
     e.preventDefault();
@@ -107,24 +157,21 @@ export default function App() {
     e.preventDefault();
     if (!inputMsg.trim()) return;
 
-    // Quá trình đóng gói và mã hóa
+    const currentTimestamp = Date.now();
     const encryptedText = encryptMessage(inputMsg, password);
     
-    // ======================================================
-    // MÔ PHỎNG KIỂM THỬ GIAO THỨC E2E TRÊN CONSOLE (BÊN GỬI)
-    // ======================================================
-    console.log("%c[GIAI ĐOẠN 1: MÃ HÓA TẠI THIẾT BỊ GỬI]", "color: #3b82f6; font-weight: bold; font-size: 12px;");
-    console.log("1. Văn bản gốc (Plaintext):", inputMsg);
-    console.log("2. Bản mã AES-256 (Ciphertext):", encryptedText);
-    console.log("%c=> CHÚ Ý: Đây là chuỗi ký tự duy nhất mà máy chủ Firebase và Vercel có thể tiếp nhận và lưu trữ. Chúng hoàn toàn không có khóa giải mã.", "color: #ef4444; font-style: italic;");
-    console.log("--------------------------------------------------");
-
     const msgPayload = {
       sender: nickname || username,
       avatar: avatar,
       text: encryptedText,
-      timestamp: Date.now()
+      timestamp: currentTimestamp
     };
+
+    console.log("%c[OUTBOUND] - DỮ LIỆU ĐÃ MÃ HÓA TẠI THIẾT BỊ GỬI", "color: #b45309; font-weight: bold; font-size: 11px;");
+    console.log(`SENDER     : ${msgPayload.sender}`);
+    console.log(`TIMESTAMP  : ${msgPayload.timestamp}`);
+    console.log(`AES-256    : ${msgPayload.text}`);
+    console.log("--------------------------------------------------");
 
     const roomId = CryptoJS.SHA256(password).toString();
     const roomRef = ref(db, `rooms/${roomId}/messages`);
@@ -147,7 +194,9 @@ export default function App() {
     return 'bg-gray-50 text-gray-900 border-gray-200';
   };
 
+  // Lọc và trộn tin nhắn + thông báo hệ thống theo đúng trình tự thời gian
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
+  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => a.timestamp - b.timestamp);
 
   if (!isLoggedIn) {
     return (
@@ -247,55 +296,64 @@ export default function App() {
         }}
       >
         <div className="relative z-10 space-y-5">
-          {filteredMessages.length === 0 && searchQuery && (
+          {displayMessages.length === 0 && searchQuery && (
             <div className="text-center text-sm opacity-60 mt-10 bg-white/50 inline-block px-4 py-2 rounded-full mx-auto flex justify-center">Truy vấn không trả về kết quả cho từ khóa "{searchQuery}"</div>
           )}
           
-          {filteredMessages.map((msg) => (
-            <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group animate-fade-in-up`}>
-              {!msg.isMine && (
-                <div className="mr-3 flex flex-col items-center">
-                  <img src={msg.senderAvatar} alt="avt" className="w-9 h-9 rounded-full border border-gray-200 shadow-sm bg-white object-cover" onError={(e) => { e.target.src = 'https://via.placeholder.com/30'; }}/>
+          {displayMessages.map((msg) => {
+            // HIỂN THỊ THÔNG BÁO VÀO/RA KHỎI PHÒNG
+            if (msg.type === 'system') {
+              return (
+                <div key={msg.id} className="flex justify-center my-4 animate-fade-in-up">
+                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[11px] px-4 py-1.5 rounded-full font-medium backdrop-blur-sm shadow-sm">
+                    {msg.text}
+                  </span>
                 </div>
-              )}
-              
-              <div className="flex flex-col max-w-[75%]">
+              );
+            }
+
+            // HIỂN THỊ TIN NHẮN BÌNH THƯỜNG
+            return (
+              <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group animate-fade-in-up`}>
                 {!msg.isMine && (
-                  <div className="flex items-center gap-2 mb-1 pl-1">
-                    <span className="text-xs font-bold opacity-60">{msg.sender}</span>
-                    <button onClick={() => handleBlockUser(msg.sender)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"><Ban size={12} /></button>
+                  <div className="mr-3 flex flex-col items-center">
+                    <img src={msg.senderAvatar} alt="avt" className="w-9 h-9 rounded-full border border-gray-200 shadow-sm bg-white object-cover" onError={(e) => { e.target.src = 'https://via.placeholder.com/30'; }}/>
                   </div>
                 )}
                 
-                <div className="flex items-center gap-2">
-                  {msg.isMine && (
-                    <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-all"><Trash2 size={14} /></button>
-                  )}
-
-                  <div 
-                    className="p-3.5 rounded-2xl text-sm shadow-md"
-                    style={{ 
-                      backgroundColor: msg.isMine ? msgBgColor : (theme === 'dark' ? '#374151' : '#ffffff'),
-                      color: msg.isMine ? '#ffffff' : 'inherit',
-                      borderRadius: msg.isMine ? '16px 16px 2px 16px' : '16px 16px 16px 2px',
-                      border: msg.isMine ? 'none' : '1px solid #e5e7eb'
-                    }}
-                  >
-                    <p className="break-words leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-                    {/* KHU VỰC HIỂN THỊ BẢN MÃ AES-256 CHO MỤC ĐÍCH KIỂM THỬ */}
-                    <div className="mt-2 pt-2 border-t border-gray-400 border-opacity-30 text-[10px] font-mono break-all opacity-80">
-                      <span className="font-bold text-red-500">Bản mã AES-256 (Dữ liệu lưu trên Server): </span> 
-                      {msg.rawText}
-                    </div>
-                  </div>
-
+                <div className="flex flex-col max-w-[75%]">
                   {!msg.isMine && (
-                    <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-all"><Trash2 size={14} /></button>
+                    <div className="flex items-center gap-2 mb-1 pl-1">
+                      <span className="text-xs font-bold opacity-60">{msg.sender}</span>
+                      <button onClick={() => handleBlockUser(msg.sender)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"><Ban size={12} /></button>
+                    </div>
                   )}
+                  
+                  <div className="flex items-center gap-2">
+                    {msg.isMine && (
+                      <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-all"><Trash2 size={14} /></button>
+                    )}
+
+                    <div 
+                      className="p-3.5 rounded-2xl text-sm shadow-md"
+                      style={{ 
+                        backgroundColor: msg.isMine ? msgBgColor : (theme === 'dark' ? '#374151' : '#ffffff'),
+                        color: msg.isMine ? '#ffffff' : 'inherit',
+                        borderRadius: msg.isMine ? '16px 16px 2px 16px' : '16px 16px 16px 2px',
+                        border: msg.isMine ? 'none' : '1px solid #e5e7eb'
+                      }}
+                    >
+                      <p className="break-words leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                    </div>
+
+                    {!msg.isMine && (
+                      <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-all"><Trash2 size={14} /></button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={messagesEndRef} />
         </div>
       </main>
