@@ -6,7 +6,8 @@ import {
   MoreVertical, Volume2, VolumeX, Ban, Edit3, MapPin, Phone, Globe
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved } from 'firebase/database';
+// Đã triệu hồi thêm serverTimestamp để chống lệch giờ giữa 2 máy
+import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved, serverTimestamp } from 'firebase/database';
 
 const firebaseConfig = {
   apiKey: "AIzaSyCK-n-_VqT3tggUy_4WyjIg9h3U2xiFgWI",
@@ -48,64 +49,59 @@ export default function App() {
   
   const messagesEndRef = useRef(null);
   const roomDisconnectRef = useRef(null);
-
-  // MỚI: Gom toàn bộ cài đặt cá nhân vào Kho chứa ngầm để không làm gián đoạn mạng
+  const currentCountRef = useRef(0);
   const prefsRef = useRef({ isMuted, selectedSound, blockedUsers, nickname, username });
+
   useEffect(() => {
     prefsRef.current = { isMuted, selectedSound, blockedUsers, nickname, username };
   }, [isMuted, selectedSound, blockedUsers, nickname, username]);
 
-  // GIAO THỨC LIÊN MẠNG: Chỉ chạy lại khi đăng nhập hoặc đổi phòng
   useEffect(() => {
     if (!isLoggedIn || !password) return;
 
     const roomId = CryptoJS.SHA256(password).toString();
-    const myId = username; // Dùng username đăng nhập làm ID cố định để tránh lỗi radar
+    const myId = username; 
     
     const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
     const presenceRef = ref(db, `rooms/${roomId}/presence`);
     const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
 
-    let currentCount = 0; // Biến bí mật đếm số người trong phòng
-
-    // 1. Ghi danh vào phòng và gài bom hẹn giờ (phòng hờ rớt mạng)
     set(myPresenceRef, true);
     onDisconnect(myPresenceRef).remove();
+    roomDisconnectRef.current = onDisconnect(roomMsgRef);
 
-    // 2. Radar theo dõi người ra vào
     const unsubJoin = onChildAdded(presenceRef, (snap) => {
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ${snap.key} vừa tham gia phòng bí mật.` }]);
+        setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ID ${snap.key} vừa tham gia phòng.` }]);
       }
     });
 
     const unsubLeave = onChildRemoved(presenceRef, (snap) => {
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ${snap.key} đã ngắt kết nối và rời đi.` }]);
+        setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ID ${snap.key} đã ngắt kết nối.` }]);
       }
     });
 
-    // 3. Hệ thống đếm người và kích hoạt bom
-    roomDisconnectRef.current = onDisconnect(roomMsgRef);
-    
     const unsubPresence = onValue(presenceRef, (snap) => {
-      currentCount = snap.size; 
-      if (currentCount < 1) {
-        roomDisconnectRef.current.remove(); // Bật chế độ tự hủy
+      currentCountRef.current = snap.size; 
+      if (currentCountRef.current <= 1) {
+        roomDisconnectRef.current.remove(); 
       } else {
-        roomDisconnectRef.current.cancel(); // Tắt chế độ tự hủy khi có 2 người trở lên
+        roomDisconnectRef.current.cancel(); 
       }
     });
 
-    // 4. Lắng nghe tin nhắn mới
+    // Ép hệ thống dùng chuẩn xếp hàng của máy chủ
     onValue(roomMsgRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const { blockedUsers, nickname: currentNick, username: currentUn, isMuted, selectedSound } = prefsRef.current;
-        const currentMyId = currentNick || currentUn;
+      const { blockedUsers, username: currentUn, isMuted, selectedSound } = prefsRef.current;
+      const loadedMessages = [];
 
-        const loadedMessages = Object.entries(data).map(([key, msgData]) => {
-          if (blockedUsers.includes(msgData.sender)) return null;
+      // Dùng forEach để bốc tin nhắn theo đúng thứ tự thời gian sinh ra
+      snapshot.forEach((childSnapshot) => {
+        const key = childSnapshot.key;
+        const msgData = childSnapshot.val();
+
+        if (!blockedUsers.includes(msgData.sender)) {
           try {
             console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
             console.log(`SENDER     : ${msgData.sender}`);
@@ -114,55 +110,42 @@ export default function App() {
             console.log("--------------------------------------------------");
 
             const decryptedText = decryptMessage(msgData.text, password);
-            return {
+            loadedMessages.push({
               id: key,
               sender: msgData.sender,
               senderAvatar: msgData.avatar,
               text: decryptedText,
               rawText: msgData.text,
-              timestamp: msgData.timestamp || 0,
-              isMine: msgData.sender === currentMyId
-            };
-          } catch (error) {
-            return null;
-          }
-        }).filter(Boolean);
-
-        setMessages(loadedMessages);
-        
-        const lastMsg = loadedMessages[loadedMessages.length - 1];
-        if (lastMsg && !lastMsg.isMine && !isMuted) {
-           const audio = new Audio(selectedSound);
-           audio.play().catch(e => {});
+              timestamp: msgData.timestamp || Date.now(),
+              // Tuyệt chiêu khóa mục tiêu: Xác định chính chủ bằng UID đăng nhập thay vì tên hiển thị
+              isMine: (msgData.uid === currentUn) || (!msgData.uid && msgData.sender === currentUn)
+            });
+          } catch (error) {}
         }
-      } else {
-        setMessages([]);
+      });
+
+      setMessages(loadedMessages);
+      
+      const lastMsg = loadedMessages[loadedMessages.length - 1];
+      if (lastMsg && !lastMsg.isMine && !isMuted) {
+         const audio = new Audio(selectedSound);
+         audio.play().catch(e => {});
       }
     });
 
-    // 5. TUYỆT CHIÊU XÓA NGAY LẬP TỨC: Bắt sự kiện khi TS bấm dấu X tắt tab web hoặc F5
     const handleUnload = () => {
-      if (currentCount <= 1) {
-        remove(roomMsgRef);
-        remove(presenceRef);
-      }
+      if (currentCountRef.current <= 1) remove(roomMsgRef);
       remove(myPresenceRef);
     };
     window.addEventListener('beforeunload', handleUnload);
 
-    // 6. DỌN DẸP SẠCH SẼ KHI THOÁT RA (GỠ COMPONENT)
     return () => {
       off(roomMsgRef);
       off(presenceRef);
       window.removeEventListener('beforeunload', handleUnload);
-      
-      // Xóa thẳng tay không cần chờ Firebase
-      if (currentCount <= 1) {
-        remove(roomMsgRef);
-        remove(presenceRef);
-      }
+      if (currentCountRef.current <= 1) remove(roomMsgRef);
       remove(myPresenceRef);
-      roomDisconnectRef.current.cancel();
+      if (roomDisconnectRef.current) roomDisconnectRef.current.cancel();
     };
   }, [isLoggedIn, password]);
 
@@ -182,19 +165,18 @@ export default function App() {
     e.preventDefault();
     if (!inputMsg.trim()) return;
 
-    const currentTimestamp = Date.now();
     const encryptedText = encryptMessage(inputMsg, password);
     
     const msgPayload = {
+      uid: username, // Khóa cứng ID nhận dạng
       sender: nickname || username,
       avatar: avatar,
       text: encryptedText,
-      timestamp: currentTimestamp
+      timestamp: serverTimestamp() // Dùng giờ chuẩn của vệ tinh máy chủ Firebase
     };
 
     console.log("%c[OUTBOUND] - DỮ LIỆU ĐÃ MÃ HÓA TẠI THIẾT BỊ GỬI", "color: #b45309; font-weight: bold; font-size: 11px;");
     console.log(`SENDER     : ${msgPayload.sender}`);
-    console.log(`TIMESTAMP  : ${msgPayload.timestamp}`);
     console.log(`AES-256    : ${msgPayload.text}`);
     console.log("--------------------------------------------------");
 
@@ -206,7 +188,7 @@ export default function App() {
   };
 
   const handleDeleteMessage = (id) => setMessages(messages.filter(msg => msg.id !== id));
-  const handleClearChat = () => { if (window.confirm("Xác nhận xóa bộ nhớ hiển thị cục bộ?")) setMessages([]); };
+  const handleClearChat = () => { if (window.confirm("Xác nhận lệnh xóa bộ nhớ đệm cục bộ?")) setMessages([]); };
   const handleBlockUser = (senderName) => {
     if (senderName !== (nickname || username) && !blockedUsers.includes(senderName)) {
       if (window.confirm(`Xác nhận chặn ID: ${senderName}?`)) setBlockedUsers(prev => [...prev, senderName]);
@@ -218,13 +200,9 @@ export default function App() {
     if (theme === 'eyecare') return 'bg-[#f4ecd8] text-[#5c4b37] border-[#d1c6ab]';
     return 'bg-gray-50 text-gray-900 border-gray-200';
   };
-// Lọc theo từ khóa, sau đó GỘP CHUNG với tin nhắn hệ thống và SẮP XẾP LẠI TỪ A-Z THEO THỜI GIAN
+
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
-  
-  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => {
-    // Ép kiểu về số (Number) để phòng hờ Firebase trả về định dạng chuỗi
-    return Number(a.timestamp) - Number(b.timestamp);
-  });;
+  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
 
   if (!isLoggedIn) {
     return (
@@ -237,7 +215,7 @@ export default function App() {
           <h2 className="text-xs font-bold mb-8 text-blue-500 uppercase tracking-widest bg-blue-50 inline-block px-3 py-1 rounded-full">Hệ thống nhắn tin bảo mật</h2>
           <form onSubmit={handleLogin} className="space-y-5">
             <div className="text-left">
-              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Định danh người dùng</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Định danh người dùng (Không nhập trùng)</label>
               <input type="text" className="w-full px-5 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50" value={username} onChange={(e) => setUsername(e.target.value)} required />
             </div>
             <div className="text-left">
@@ -332,7 +310,7 @@ export default function App() {
             if (msg.type === 'system') {
               return (
                 <div key={msg.id} className="flex justify-center my-4 animate-fade-in-up">
-                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[11px] px-4 py-1.5 rounded-full font-medium backdrop-blur-sm shadow-sm">
+                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[10px] px-3 py-1 rounded-full font-semibold uppercase tracking-wider backdrop-blur-sm shadow-sm border border-gray-300/30">
                     {msg.text}
                   </span>
                 </div>
