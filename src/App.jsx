@@ -6,8 +6,7 @@ import {
   MoreVertical, Volume2, VolumeX, Ban, Edit3, MapPin, Phone, Globe
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-// THÊM serverTimestamp VÀO ĐÂY NÈ TS
-import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved, serverTimestamp } from 'firebase/database';
+import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved } from 'firebase/database';
 
 const firebaseConfig = {
   apiKey: "AIzaSyCK-n-_VqT3tggUy_4WyjIg9h3U2xiFgWI",
@@ -49,6 +48,10 @@ export default function App() {
   
   const messagesEndRef = useRef(null);
   const roomDisconnectRef = useRef(null);
+  const sessionRef = useRef(`ss-${Date.now()}-${Math.floor(Math.random()*10000)}`);
+  const serverTimeOffsetRef = useRef(0);
+  const presenceCountRef = useRef(0);
+  const hasCleanedUpRef = useRef(false);
 
   const prefsRef = useRef({ isMuted, selectedSound, blockedUsers, nickname, username });
   useEffect(() => {
@@ -58,34 +61,59 @@ export default function App() {
   useEffect(() => {
     if (!isLoggedIn || !password) return;
 
+    hasCleanedUpRef.current = false;
+    const offsetRef = ref(db, ".info/serverTimeOffset");
+    onValue(offsetRef, (snap) => { serverTimeOffsetRef.current = snap.val() || 0; });
+
     const roomId = CryptoJS.SHA256(password).toString();
-    const myId = username; 
+    const mySessionId = sessionRef.current; 
     
     const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
     const presenceRef = ref(db, `rooms/${roomId}/presence`);
-    const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
+    const myPresenceRef = ref(db, `rooms/${roomId}/presence/${mySessionId}`);
 
-    let currentCount = 0; 
-
-    set(myPresenceRef, true);
+    // 1. Đẩy tên lên Firebase (Dùng sessionRef.current làm ID duy nhất)
+    const myName = String(nickname || username || "Thành viên HUB");
+    const myId = sessionRef.current; 
+    
+    set(myPresenceRef, myName);
     onDisconnect(myPresenceRef).remove();
 
+    // 2. Lắng nghe người mới
     const unsubJoin = onChildAdded(presenceRef, (snap) => {
-      if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ${snap.key} vừa tham gia phòng bí mật.` }]);
+      const userVal = snap.val();
+      const userId = snap.key;
+
+      // CHỐT CHẶN: Chỉ hiện nếu ID người mới khác hoàn toàn ID của mình
+      if (userId !== myId) {
+        // Kiểm tra xem có phải dữ liệu cũ (true) không, nếu là tên thật mới hiện
+        const displayName = (userVal === true || userVal === "true") ? "Người dùng ẩn danh" : userVal;
+        
+        setSystemLogs(prev => [...prev, { 
+          id: `join-${userId}-${Date.now()}`, 
+          type: 'system', 
+          timestamp: Date.now(), 
+          text: `👋 ${displayName} vừa tham gia phòng bí mật.` 
+        }]);
       }
     });
 
+    // 3. Lắng nghe người rời đi
     const unsubLeave = onChildRemoved(presenceRef, (snap) => {
+      const userVal = snap.val();
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ${snap.key} đã ngắt kết nối và rời đi.` }]);
+        const displayName = (userVal === true || userVal === "true") ? "Người dùng ẩn danh" : userVal;
+        setSystemLogs(prev => [...prev, { 
+          id: `leave-${snap.key}-${Date.now()}`, 
+          type: 'system', 
+          timestamp: Date.now(), 
+          text: `🚪 ${displayName} đã rời đi.` 
+        }]);
       }
     });
 
-    roomDisconnectRef.current = onDisconnect(roomMsgRef);
-    
     const unsubPresence = onValue(presenceRef, (snap) => {
-      currentCount = snap.size; 
+      const currentCount = snap.size; 
       if (currentCount <= 1) {
         roomDisconnectRef.current.remove(); 
       } else {
@@ -98,62 +126,50 @@ export default function App() {
       const currentMyId = currentNick || currentUn;
       const loadedMessages = [];
 
-      // Dùng forEach để bốc đúng thứ tự tự nhiên từ Firebase
       snapshot.forEach((childSnapshot) => {
         const key = childSnapshot.key;
         const msgData = childSnapshot.val();
 
-        if (!blockedUsers.includes(msgData.sender)) {
+        if (msgData && !blockedUsers.includes(msgData.sender)) {
           try {
-            console.log("%c[INBOUND] - Dữ liệu tiếp nhận", "color: #047857; font-weight: bold; font-size: 11px;");
-            console.log(`SENDER     : ${msgData.sender}`);
-            console.log(`TIMESTAMP  : ${msgData.timestamp}`);
-            console.log(`AES-256    : ${msgData.text}`);
-            console.log("--------------------------------------------------");
-
             const decryptedText = decryptMessage(msgData.text, password);
+            let parsedTime = (typeof msgData.timestamp === 'number') ? msgData.timestamp : Date.now(); 
+
             loadedMessages.push({
               id: key,
               sender: msgData.sender,
               senderAvatar: msgData.avatar,
               text: decryptedText,
-              rawText: msgData.text,
-              timestamp: msgData.timestamp || Date.now(),
-              isMine: msgData.sender === currentMyId
+              timestamp: parsedTime,
+              isMine: msgData.sender === currentMyId || msgData.sender === currentUn
             });
-          } catch (error) {}
+          } catch (error) {
+             // Bỏ qua tin nhắn không giải mã được
+          }
         }
       });
 
       setMessages(loadedMessages);
-      
       const lastMsg = loadedMessages[loadedMessages.length - 1];
       if (lastMsg && !lastMsg.isMine && !isMuted) {
-         const audio = new Audio(selectedSound);
-         audio.play().catch(e => {});
+         new Audio(selectedSound).play().catch(() => {});
       }
     });
 
-    const handleUnload = () => {
-      if (currentCount <= 1) {
-        remove(roomMsgRef);
-        remove(presenceRef);
-      }
+    const performCleanup = () => {
+      if (hasCleanedUpRef.current) return;
+      hasCleanedUpRef.current = true;
       remove(myPresenceRef);
-    };
-    window.addEventListener('beforeunload', handleUnload);
-
-    return () => {
+      if (presenceCountRef.current <= 1) remove(roomMsgRef);
       off(roomMsgRef);
       off(presenceRef);
-      window.removeEventListener('beforeunload', handleUnload);
-      
-      if (currentCount <= 1) {
-        remove(roomMsgRef);
-        remove(presenceRef);
-      }
-      remove(myPresenceRef);
-      roomDisconnectRef.current.cancel();
+      if (roomDisconnectRef.current) roomDisconnectRef.current.cancel();
+    };
+
+    window.addEventListener('beforeunload', performCleanup);
+    return () => {
+      window.removeEventListener('beforeunload', performCleanup);
+      performCleanup(); 
     };
   }, [isLoggedIn, password]);
 
@@ -161,10 +177,13 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, systemLogs]);
 
+  // FIX 3: Làm sạch dữ liệu đầu vào khi login
   const handleLogin = (e) => {
     e.preventDefault();
     if (username.trim() && password.trim()) {
-      setNickname(username); 
+      const cleanName = username.trim();
+      setUsername(cleanName);
+      setNickname(cleanName);
       setIsLoggedIn(true);
     }
   };
@@ -174,32 +193,26 @@ export default function App() {
     if (!inputMsg.trim()) return;
 
     const encryptedText = encryptMessage(inputMsg, password);
-    
+    const globalTimestamp = Date.now() + serverTimeOffsetRef.current;
+
     const msgPayload = {
+      uid: sessionRef.current,
       sender: nickname || username,
       avatar: avatar,
       text: encryptedText,
-      timestamp: serverTimestamp() // GIẢI PHÁP TỐI THƯỢNG: Trả quyền chốt giờ cho Firebase
+      timestamp: globalTimestamp 
     };
 
-    console.log("%c[OUTBOUND] - DỮ LIỆU ĐÃ MÃ HÓA TẠI THIẾT BỊ GỬI", "color: #b45309; font-weight: bold; font-size: 11px;");
-    console.log(`SENDER     : ${msgPayload.sender}`);
-    console.log(`TIMESTAMP  : Hệ thống Firebase tự động cấp`);
-    console.log(`AES-256    : ${msgPayload.text}`);
-    console.log("--------------------------------------------------");
-
     const roomId = CryptoJS.SHA256(password).toString();
-    const roomRef = ref(db, `rooms/${roomId}/messages`);
-    push(roomRef, msgPayload);
-    
+    push(ref(db, `rooms/${roomId}/messages`), msgPayload);
     setInputMsg('');
   };
 
   const handleDeleteMessage = (id) => setMessages(messages.filter(msg => msg.id !== id));
-  const handleClearChat = () => { if (window.confirm("Xác nhận lệnh xóa bộ nhớ đệm cục bộ?")) setMessages([]); };
+  const handleClearChat = () => { if (window.confirm("Xóa bộ nhớ đệm hiển thị?")) setMessages([]); };
   const handleBlockUser = (senderName) => {
     if (senderName !== (nickname || username) && !blockedUsers.includes(senderName)) {
-      if (window.confirm(`Xác nhận chặn ID: ${senderName}?`)) setBlockedUsers(prev => [...prev, senderName]);
+      if (window.confirm(`Chặn ID: ${senderName}?`)) setBlockedUsers(prev => [...prev, senderName]);
     }
   };
 
@@ -210,31 +223,24 @@ export default function App() {
   };
 
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
-  
- const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+  const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
 
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md text-center transform transition-all hover:scale-[1.01]">
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4 font-sans">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md text-center">
           <div className="flex justify-center mb-6">
-            <img src="/assets/logo.png" alt="HUB Logo" className="w-28 h-28 object-contain bg-gray-50 rounded-full border-4 border-blue-100 p-2 shadow-sm" onError={(e) => { e.target.src = 'https://via.placeholder.com/100?text=LOGO'; }} />
+            <img src="/assets/logo.png" alt="HUB Logo" className="w-24 h-24 object-contain" onError={(e) => { e.target.src = 'https://via.placeholder.com/100?text=HUB'; }} />
           </div>
-          <h1 className="text-2xl font-bold text-blue-900 mb-1">TRƯỜNG ĐẠI HỌC NGÂN HÀNG TP.HCM</h1>
-          <h2 className="text-xs font-bold mb-8 text-blue-500 uppercase tracking-widest bg-blue-50 inline-block px-3 py-1 rounded-full">Hệ thống nhắn tin bảo mật</h2>
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div className="text-left">
-              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Tên đăng nhập </label>
-              <input type="text" className="w-full px-5 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50" value={username} onChange={(e) => setUsername(e.target.value)} required />
-            </div>
-            <div className="text-left">
-              <label className="block text-sm font-semibold text-gray-700 mb-1 ml-1">Khóa phòng</label>
-              <input type="password" className="w-full px-5 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </div>
-            <button type="submit" className="w-full bg-blue-700 text-white py-3.5 rounded-xl hover:bg-blue-800 transition-colors font-bold text-lg shadow-md hover:shadow-lg mt-2">Truy cập hệ thống</button>
+          <h1 className="text-xl font-bold text-blue-900 mb-1">ĐẠI HỌC NGÂN HÀNG TP.HCM</h1>
+          <p className="text-xs font-bold mb-8 text-blue-500 uppercase tracking-widest">Hệ thống nhắn tin nội bộ</p>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <input type="text" placeholder="Định danh người dùng" className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={username} onChange={(e) => setUsername(e.target.value)} required />
+            <input type="password" placeholder="Mật mã phòng chat" className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <button type="submit" className="w-full bg-blue-700 text-white py-3 rounded-xl font-bold hover:bg-blue-800 transition-all shadow-lg">Bắt đầu phiên làm việc</button>
           </form>
-          <div className="mt-8 flex items-center justify-center gap-1.5 text-xs text-green-600 bg-green-50 py-2 rounded-lg font-medium">
-            <Shield size={16} /> Thuật toán mã hóa AES-256
+          <div className="mt-6 flex items-center justify-center gap-2 text-[10px] text-green-600 font-bold uppercase">
+            <Shield size={14} /> Bảo mật đa tầng AES-256
           </div>
         </div>
       </div>
@@ -242,59 +248,47 @@ export default function App() {
   }
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col font-sans ${getThemeClass()} transition-colors duration-200`}>
-      <header className="p-3 border-b flex justify-between items-center bg-white/5 shadow-sm backdrop-blur-md relative z-50">
+    <div className={`h-screen overflow-hidden flex flex-col font-sans ${getThemeClass()}`}>
+      <header className="p-3 border-b flex justify-between items-center bg-white/10 backdrop-blur-md z-50">
         <div className="flex items-center gap-3">
-          <img src={avatar} alt="Avatar" className="w-11 h-11 rounded-full border-2 border-white shadow-sm object-cover bg-white" onError={(e) => { e.target.src = 'https://via.placeholder.com/40'; }}/>
+          <img src={avatar} className="w-10 h-10 rounded-full border-2 border-white shadow-sm object-cover" alt="avatar" />
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="font-bold text-base">{nickname || username}</h2>
-              <button onClick={() => { const newName = prompt("Đổi tên đăng nhập:", nickname); if(newName) setNickname(newName); }} className="text-gray-400 hover:text-blue-500 transition-colors"><Edit3 size={14} /></button>
-            </div>
-            <p className="text-[10px] opacity-70 flex items-center gap-1 text-green-500 font-medium"><Shield size={10} /> Đã mã hóa kênh truyền</p>
+            <h2 className="font-bold text-sm flex items-center gap-2">
+              {nickname || username}
+              <Edit3 size={12} className="cursor-pointer opacity-50 hover:opacity-100" onClick={() => { const n = prompt("Tên mới:", nickname); if(n) setNickname(n); }} />
+            </h2>
+            <span className="text-[9px] text-green-500 flex items-center gap-1 font-bold italic"><Shield size={8} /> Kênh truyền an toàn</span>
           </div>
         </div>
         
-        <div className="flex items-center gap-3">
-          <div className="relative hidden md:block">
-            <Search size={14} className="absolute left-3 top-2.5 opacity-40" />
-            <input type="text" placeholder="Tìm kiếm tin nhắn..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-9 pr-4 py-2 text-xs border border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white/50 w-48 transition-all focus:w-64" />
+        <div className="flex items-center gap-2">
+          <div className="relative hidden sm:block">
+            <Search size={12} className="absolute left-3 top-2.5 opacity-40" />
+            <input type="text" placeholder="Tìm tin nhắn..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-8 pr-3 py-1.5 text-[11px] border rounded-full bg-white/50 w-32 focus:w-48 transition-all outline-none" />
           </div>
-          <div className="h-6 w-px bg-gray-300/50 mx-1"></div>
-          <button onClick={() => setTheme('light')} className="p-1.5 rounded-full hover:bg-gray-200/50 opacity-70 hover:opacity-100 transition-all"><Sun size={18} /></button>
-          <button onClick={() => setTheme('dark')} className="p-1.5 rounded-full hover:bg-gray-200/50 opacity-70 hover:opacity-100 transition-all"><Moon size={18} /></button>
-          <button onClick={() => setTheme('eyecare')} className="p-1.5 rounded-full hover:bg-gray-200/50 opacity-70 hover:opacity-100 text-amber-600 transition-all"><Eye size={18} /></button>
-          <div className="h-6 w-px bg-gray-300/50 mx-1"></div>
+          <button onClick={() => setTheme('light')} className="p-1.5 hover:bg-gray-200/50 rounded-full"><Sun size={16} /></button>
+          <button onClick={() => setTheme('dark')} className="p-1.5 hover:bg-gray-200/50 rounded-full"><Moon size={16} /></button>
+          <button onClick={() => setTheme('eyecare')} className="p-1.5 hover:bg-gray-200/50 rounded-full"><Eye size={16} /></button>
           <div className="relative">
-            <button onClick={() => setShowSettings(!showSettings)} className="p-1.5 opacity-70 hover:opacity-100 rounded-full hover:bg-gray-200/50 transition-all"><MoreVertical size={20} /></button>
+            <button onClick={() => setShowSettings(!showSettings)} className="p-1.5 hover:bg-gray-200/50 rounded-full"><MoreVertical size={18} /></button>
             {showSettings && (
-              <div className="absolute right-0 mt-3 w-72 bg-white text-gray-800 border shadow-2xl rounded-xl p-4 z-50 text-sm max-h-[60vh] overflow-y-auto">
-                <h3 className="font-bold mb-3 border-b pb-2 text-xs text-blue-600 tracking-wide">THÔNG SỐ MÔI TRƯỜNG</h3>
-                <div className="mb-4 flex justify-between items-center"><span className="font-medium">Mã màu nhận diện:</span><input type="color" value={msgBgColor} onChange={(e) => setMsgBgColor(e.target.value)} className="w-8 h-8 border border-gray-200 rounded cursor-pointer p-0.5" /></div>
-                <div className="mb-4 bg-gray-50 p-2 rounded-lg border">
-                  <div className="flex justify-between items-center mb-2"><span className="font-medium text-xs">Cảnh báo đa phương tiện:</span><button onClick={() => setIsMuted(!isMuted)} className={`p-1.5 rounded-md transition-colors ${!isMuted ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{!isMuted ? <Volume2 size={16} /> : <VolumeX size={16} />}</button></div>
-                  {!isMuted && (
-                    <div className="flex gap-1 justify-between">
-                      {SOUNDS.map((snd, idx) => (
-                        <button key={idx} onClick={() => { setSelectedSound(snd); new Audio(snd).play().catch(e=>{}); }} className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${selectedSound === snd ? 'bg-blue-500 text-white border-blue-600 shadow-inner' : 'bg-white text-gray-600 hover:bg-gray-100'}`}>Tệp {idx + 1}</button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="mb-4">
-                  <span className="block mb-2 font-medium text-xs">Avatar:</span>
-                  <div className="grid grid-cols-5 gap-1.5 max-h-28 overflow-y-auto border border-gray-100 p-1.5 rounded-lg bg-gray-50">
-                    {AVATARS.map((img, idx) => <img key={idx} src={img} alt={`Avt ${idx+1}`} onClick={() => setAvatar(img)} className={`w-full aspect-square object-cover rounded-md cursor-pointer border-2 transition-transform hover:scale-110 ${avatar === img ? 'border-blue-500 ring-2 ring-blue-300' : 'border-transparent'}`} onError={(e) => { e.target.src = 'https://via.placeholder.com/30'; }} />)}
+              <div className="absolute right-0 mt-2 w-64 bg-white text-gray-800 border shadow-2xl rounded-xl p-4 z-[100] text-xs">
+                <p className="font-bold border-b pb-2 mb-3 text-blue-600">TÙY CHỈNH CÁ NHÂN</p>
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center"><span>Màu tin nhắn:</span><input type="color" value={msgBgColor} onChange={(e) => setMsgBgColor(e.target.value)} className="w-6 h-6 rounded cursor-pointer border-none" /></div>
+                  <div className="flex justify-between items-center">
+                    <span>Âm báo:</span>
+                    <button onClick={() => setIsMuted(!isMuted)} className={`p-1 rounded ${!isMuted ? 'text-green-600' : 'text-red-600'}`}>
+                      {!isMuted ? <Volume2 size={16} /> : <VolumeX size={16} />}
+                    </button>
                   </div>
-                </div>
-                <div className="mb-4">
-                  <span className="block mb-2 font-medium text-xs">Phông nền hiển thị:</span>
-                  <div className="grid grid-cols-4 gap-1.5 max-h-24 overflow-y-auto border border-gray-100 p-1.5 rounded-lg bg-gray-50">
-                    <div onClick={() => setChatBg('')} className="w-full aspect-video bg-gray-200 cursor-pointer border rounded flex items-center justify-center text-[10px] font-bold text-gray-500 hover:bg-gray-300 transition-colors">Tối giản</div>
-                    {BACKGROUNDS.map((bg, idx) => <img key={idx} src={bg} alt={`Bg ${idx+1}`} onClick={() => setChatBg(`url(${bg})`)} className={`w-full aspect-video object-cover rounded cursor-pointer border-2 hover:opacity-80 transition-opacity ${chatBg === `url(${bg})` ? 'border-blue-500' : 'border-transparent'}`} onError={(e) => { e.target.src = 'https://via.placeholder.com/40x20'; }} />)}
+                  <div className="max-h-24 overflow-y-auto grid grid-cols-5 gap-1 p-1 border rounded bg-gray-50">
+                    {AVATARS.map((img, idx) => <img key={idx} src={img} onClick={() => setAvatar(img)} className={`w-full aspect-square object-cover rounded cursor-pointer border-2 ${avatar === img ? 'border-blue-500' : 'border-transparent'}`} alt="avt" />)}
                   </div>
+                  <button onClick={handleClearChat} className="w-full py-2 text-red-600 font-bold border-t mt-2 flex items-center justify-center gap-2 hover:bg-red-50 rounded">
+                    <Trash2 size={14} /> Xóa lịch sử tạm thời
+                  </button>
                 </div>
-                <button onClick={handleClearChat} className="w-full text-center text-red-600 font-bold flex items-center justify-center gap-2 pt-3 border-t mt-2 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 size={16} /> Xóa bộ đệm cục bộ</button>
               </div>
             )}
           </div>
@@ -302,96 +296,64 @@ export default function App() {
       </header>
 
       <main 
-        className="h-full flex-1 overflow-y-auto p-4 space-y-4 relative z-0" 
+        className="flex-1 overflow-y-auto p-4 space-y-4"
         style={{ 
-          backgroundImage: chatBg, 
-          backgroundSize: 'cover', 
-          backgroundPosition: 'center',
+          backgroundImage: chatBg, backgroundSize: 'cover', backgroundPosition: 'center',
           backgroundColor: theme === 'dark' ? '#111827' : (theme === 'eyecare' ? '#e8dfc8' : '#ffffff')
         }}
       >
-        <div className="relative z-10 space-y-5">
-          {displayMessages.length === 0 && searchQuery && (
-            <div className="text-center text-sm opacity-60 mt-10 bg-white/50 inline-block px-4 py-2 rounded-full mx-auto flex justify-center">Truy vấn không trả về kết quả cho từ khóa "{searchQuery}"</div>
-          )}
-          
-          {displayMessages.map((msg) => {
-            if (msg.type === 'system') {
-              return (
-                <div key={msg.id} className="flex justify-center my-4 animate-fade-in-up">
-                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[10px] px-3 py-1 rounded-full font-semibold uppercase tracking-wider backdrop-blur-sm shadow-sm border border-gray-300/30">
-                    {msg.text}
-                  </span>
-                </div>
-              );
-            }
-
+        {displayMessages.map((msg) => {
+          if (msg.type === 'system') {
             return (
-              <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group animate-fade-in-up`}>
-                {!msg.isMine && (
-                  <div className="mr-3 flex flex-col items-center">
-                    <img src={msg.senderAvatar} alt="avt" className="w-9 h-9 rounded-full border border-gray-200 shadow-sm bg-white object-cover" onError={(e) => { e.target.src = 'https://via.placeholder.com/30'; }}/>
-                  </div>
-                )}
-                
-                <div className="flex flex-col max-w-[75%]">
-                  {!msg.isMine && (
-                    <div className="flex items-center gap-2 mb-1 pl-1">
-                      <span className="text-xs font-bold opacity-60">{msg.sender}</span>
-                      <button onClick={() => handleBlockUser(msg.sender)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"><Ban size={12} /></button>
-                    </div>
-                  )}
-                  
-                  <div className="flex items-center gap-2">
-                    {msg.isMine && (
-                      <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-all"><Trash2 size={14} /></button>
-                    )}
-
-                    <div 
-                      className="p-3.5 rounded-2xl text-sm shadow-md"
-                      style={{ 
-                        backgroundColor: msg.isMine ? msgBgColor : (theme === 'dark' ? '#374151' : '#ffffff'),
-                        color: msg.isMine ? '#ffffff' : 'inherit',
-                        borderRadius: msg.isMine ? '16px 16px 2px 16px' : '16px 16px 16px 2px',
-                        border: msg.isMine ? 'none' : '1px solid #e5e7eb'
-                      }}
-                    >
-                      <p className="break-words leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-                    </div>
-
-                    {!msg.isMine && (
-                      <button onClick={() => handleDeleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-all"><Trash2 size={14} /></button>
-                    )}
-                  </div>
-                </div>
+              <div key={msg.id} className="flex justify-center my-2">
+                <span className="bg-black/5 dark:bg-white/5 text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest opacity-60">
+                  {msg.text}
+                </span>
               </div>
             );
-          })}
-          <div ref={messagesEndRef} />
-        </div>
+          }
+          return (
+            <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group items-end gap-2 animate-fade-in-up`}>
+              {!msg.isMine && <img src={msg.senderAvatar} className="w-8 h-8 rounded-full shadow-sm" alt="v" />}
+              <div className={`flex flex-col max-w-[80%] ${msg.isMine ? 'items-end' : 'items-start'}`}>
+                {!msg.isMine && <span className="text-[10px] font-bold mb-1 ml-1 opacity-50">{msg.sender}</span>}
+                <div 
+                  className="p-3 rounded-2xl text-sm shadow-sm relative group"
+                  style={{ 
+                    backgroundColor: msg.isMine ? msgBgColor : (theme === 'dark' ? '#374151' : '#ffffff'),
+                    color: msg.isMine ? '#fff' : 'inherit',
+                    borderRadius: msg.isMine ? '18px 18px 2px 18px' : '18px 18px 18px 2px'
+                  }}
+                >
+                  <p className="whitespace-pre-wrap break-words">{msg.text}</p>
+                  <button 
+                    onClick={() => handleDeleteMessage(msg.id)} 
+                    className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-all"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={messagesEndRef} />
       </main>
 
-      <div className="p-4 border-t bg-white/5 backdrop-blur-md relative z-20">
-        <form onSubmit={handleSendMessage} className="flex gap-2 max-w-5xl mx-auto">
-          <input type="text" value={inputMsg} onChange={(e) => setInputMsg(e.target.value)} placeholder="Nhập văn bản truyền tải..." className="flex-1 px-5 py-3 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white/80 shadow-inner text-sm transition-all" />
-          <button type="submit" className="bg-blue-600 text-white px-5 rounded-full hover:bg-blue-700 transition-all transform hover:scale-105 shadow-md flex items-center justify-center"><Send size={18} className="ml-1" /></button>
+      <footer className="p-4 border-t bg-white/5 backdrop-blur-md">
+        <form onSubmit={handleSendMessage} className="flex gap-2 max-w-4xl mx-auto">
+          <input 
+            type="text" value={inputMsg} onChange={(e) => setInputMsg(e.target.value)} 
+            placeholder="Gửi tin nhắn được mã hóa..." 
+            className="flex-1 px-5 py-3 rounded-full border bg-white/80 focus:ring-2 focus:ring-blue-500 outline-none text-sm shadow-inner" 
+          />
+          <button type="submit" className="bg-blue-600 text-white p-3 rounded-full hover:bg-blue-700 transition-transform active:scale-95 shadow-md">
+            <Send size={18} />
+          </button>
         </form>
-      </div>
-
-      <footer className="border-t p-5 text-xs opacity-80 bg-gray-100 text-gray-700 dark:bg-gray-950 dark:text-gray-400 relative z-20">
-        <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="flex items-center gap-4">
-            <img src="/assets/logo.png" alt="HUB Logo" className="w-10 h-10 grayscale opacity-60" onError={(e) => { e.target.style.display = 'none'; }} />
-            <div>
-              <p className="font-bold text-sm mb-0.5 text-gray-900 dark:text-gray-200">Trường Đại học Ngân hàng TP.HCM (HUB)</p>
-              <p className="font-medium text-blue-700 dark:text-blue-400">Khoa Khoa học dữ liệu trong kinh doanh</p>
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-1.5 text-right font-medium">
-            <p className="flex items-center gap-1.5"><MapPin size={12} className="text-gray-400" /> 36 Tôn Thất Đạm, Q.1 | 56 Hoàng Diệu 2, Thủ Đức TP. HCM</p>
-            <p className="flex items-center gap-1.5"><Phone size={12} className="text-gray-400" /> (028) 38 291 901</p>
-            <p className="flex items-center gap-1.5"><Globe size={12} className="text-gray-400" /> <a href="https://hub.edu.vn" target="_blank" rel="noreferrer" className="hover:text-blue-600 transition-colors">hub.edu.vn</a></p>
-          </div>
+        <div className="mt-4 flex justify-between items-center text-[9px] opacity-40 font-bold px-4">
+           <span>HUB DATA SCIENCE - SECURE HUB v2.0</span>
+           <span>AES-256 E2EE ACTIVE</span>
         </div>
       </footer>
     </div>
