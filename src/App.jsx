@@ -6,7 +6,6 @@ import {
   MoreVertical, Volume2, VolumeX, Ban, Edit3, MapPin, Phone, Globe
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-// Đã thêm các công cụ kết nối thời gian thực và tự động hủy (onDisconnect)
 import { getDatabase, ref, push, onValue, off, set, remove, onDisconnect, onChildAdded, onChildRemoved } from 'firebase/database';
 
 const firebaseConfig = {
@@ -32,7 +31,7 @@ export default function App() {
   const [password, setPassword] = useState('');
 
   const [messages, setMessages] = useState([]);
-  const [systemLogs, setSystemLogs] = useState([]); // Trạng thái mới: Lưu trữ thông báo hệ thống
+  const [systemLogs, setSystemLogs] = useState([]);
   const [inputMsg, setInputMsg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -48,98 +47,127 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   
   const messagesEndRef = useRef(null);
-  const roomDisconnectRef = useRef(null); // Biến tham chiếu lưu lệnh hủy diệt phòng
+  const roomDisconnectRef = useRef(null);
+  const currentCountRef = useRef(0);
+  const prefsRef = useRef({ isMuted, selectedSound, blockedUsers, nickname, username });
 
   useEffect(() => {
-    if (isLoggedIn && password) {
-      const roomId = CryptoJS.SHA256(password).toString();
-      const myId = nickname || username;
-      
-      const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
-      const presenceRef = ref(db, `rooms/${roomId}/presence`);
-      const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
+    prefsRef.current = { isMuted, selectedSound, blockedUsers, nickname, username };
+  }, [isMuted, selectedSound, blockedUsers, nickname, username]);
 
-      // 1. Đăng ký sự hiện diện của bản thân và cài đặt tự động xóa tên khi tắt web
-      set(myPresenceRef, true);
-      onDisconnect(myPresenceRef).remove();
+  useEffect(() => {
+    if (!isLoggedIn || !password) return;
 
-      // 2. Lắng nghe radar: Có người mới lẻn vào phòng
-      const unsubJoin = onChildAdded(presenceRef, (snap) => {
-        if (snap.key !== myId) {
-          setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ${snap.key} vừa tham gia phòng bí mật.` }]);
-        }
-      });
+    const roomId = CryptoJS.SHA256(password).toString();
+    const myId = username; 
+    
+    const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
+    const presenceRef = ref(db, `rooms/${roomId}/presence`);
+    const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
 
-      // 3. Lắng nghe radar: Có người rón rén rời khỏi phòng
-      const unsubLeave = onChildRemoved(presenceRef, (snap) => {
-        if (snap.key !== myId) {
-          setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ${snap.key} đã ngắt kết nối và rời đi.` }]);
-        }
-      });
+    // Thiết lập phiên kết nối nội bộ
+    set(myPresenceRef, true);
+    onDisconnect(myPresenceRef).remove();
+    roomDisconnectRef.current = onDisconnect(roomMsgRef);
 
-      // 4. MẬT VỤ AUTO-DELETE: Đếm số người để kích hoạt tự hủy
-      roomDisconnectRef.current = onDisconnect(roomMsgRef); // Lên nòng sẵn lệnh xóa toàn bộ tin nhắn
-      
-      const unsubPresence = onValue(presenceRef, (snap) => {
-        const count = snap.size; 
-        if (count <= 1) {
-          // Báo động: Phòng chỉ còn 1 người. Nếu người này đi, hãy nổ tung dữ liệu! 💥
-          roomDisconnectRef.current.remove();
-        } else {
-          // An toàn: Trong phòng vẫn đang đông người, thu hồi lệnh nổ đi. 🛑
-          roomDisconnectRef.current.cancel();
-        }
-      });
+    // Ghi nhận trạng thái tham gia của các thực thể khác
+    const unsubJoin = onChildAdded(presenceRef, (snap) => {
+      if (snap.key !== myId) {
+        setSystemLogs(prev => [...prev, { 
+          id: `join-${snap.key}-${Date.now()}`, 
+          type: 'system', 
+          timestamp: Date.now(), 
+          text: `Truy cập thiết lập: ID ${snap.key} vừa tham gia phiên bản mã hóa.` 
+        }]);
+      }
+    });
 
-      // 5. Lắng nghe tin nhắn như cũ
-      onValue(roomMsgRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          const loadedMessages = Object.entries(data).map(([key, msgData]) => {
-            if (blockedUsers.includes(msgData.sender)) return null;
-            try {
-              console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
-              console.log(`SENDER     : ${msgData.sender}`);
-              console.log(`TIMESTAMP  : ${msgData.timestamp}`);
-              console.log(`AES-256    : ${msgData.text}`);
-              console.log("--------------------------------------------------");
+    // Ghi nhận trạng thái ngắt kết nối
+    const unsubLeave = onChildRemoved(presenceRef, (snap) => {
+      if (snap.key !== myId) {
+        setSystemLogs(prev => [...prev, { 
+          id: `leave-${snap.key}-${Date.now()}`, 
+          type: 'system', 
+          timestamp: Date.now(), 
+          text: `Truy cập ngắt: ID ${snap.key} đã thoát khỏi phiên bản.` 
+        }]);
+      }
+    });
 
-              const decryptedText = decryptMessage(msgData.text, password);
-              return {
-                id: key,
-                sender: msgData.sender,
-                senderAvatar: msgData.avatar,
-                text: decryptedText,
-                rawText: msgData.text,
-                timestamp: msgData.timestamp || 0, // Lưu lại thời gian để trộn chung với thông báo hệ thống
-                isMine: msgData.sender === myId
-              };
-            } catch (error) {
-              return null;
-            }
-          }).filter(Boolean);
+    // Giám sát tổng lưu lượng truy cập để kích hoạt lệnh hủy dữ liệu
+    const unsubPresence = onValue(presenceRef, (snap) => {
+      currentCountRef.current = snap.size; 
+      if (currentCountRef.current <= 1) {
+        roomDisconnectRef.current.remove(); 
+      } else {
+        roomDisconnectRef.current.cancel(); 
+      }
+    });
 
-          setMessages(loadedMessages);
-          
-          const lastMsg = loadedMessages[loadedMessages.length - 1];
-          if (lastMsg && !lastMsg.isMine && !isMuted) {
-             const audio = new Audio(selectedSound);
-             audio.play().catch(e => {});
+    // Lắng nghe và giải mã luồng văn bản
+    onValue(roomMsgRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const { blockedUsers, nickname: currentNick, username: currentUn, isMuted, selectedSound } = prefsRef.current;
+        const currentMyId = currentNick || currentUn;
+
+        const loadedMessages = Object.entries(data).map(([key, msgData]) => {
+          if (blockedUsers.includes(msgData.sender)) return null;
+          try {
+            console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
+            console.log(`SENDER     : ${msgData.sender}`);
+            console.log(`TIMESTAMP  : ${msgData.timestamp}`);
+            console.log(`AES-256    : ${msgData.text}`);
+            console.log("--------------------------------------------------");
+
+            const decryptedText = decryptMessage(msgData.text, password);
+            return {
+              id: key,
+              sender: msgData.sender,
+              senderAvatar: msgData.avatar,
+              text: decryptedText,
+              rawText: msgData.text,
+              timestamp: msgData.timestamp || 0,
+              isMine: msgData.sender === currentMyId
+            };
+          } catch (error) {
+            return null;
           }
-        } else {
-          setMessages([]);
-        }
-      });
+        }).filter(Boolean);
 
-      // Dọn dẹp chiến trường khi người dùng tự đăng xuất
-      return () => {
-        off(roomMsgRef);
-        off(presenceRef);
-        remove(myPresenceRef);
-        roomDisconnectRef.current.cancel();
-      };
-    }
-  }, [isLoggedIn, password, blockedUsers, isMuted, selectedSound, nickname, username]);
+        setMessages(loadedMessages);
+        
+        const lastMsg = loadedMessages[loadedMessages.length - 1];
+        if (lastMsg && !lastMsg.isMine && !isMuted) {
+           const audio = new Audio(selectedSound);
+           audio.play().catch(e => {});
+        }
+      } else {
+        setMessages([]);
+      }
+    });
+
+    // Thực thi dọn dẹp bộ nhớ tức thời khi trình duyệt đóng phiên bản
+    const handleUnload = () => {
+      if (currentCountRef.current <= 1) {
+        remove(roomMsgRef);
+      }
+      remove(myPresenceRef);
+    };
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      off(roomMsgRef);
+      off(presenceRef);
+      window.removeEventListener('beforeunload', handleUnload);
+      
+      if (currentCountRef.current <= 1) {
+        remove(roomMsgRef);
+      }
+      remove(myPresenceRef);
+      if (roomDisconnectRef.current) roomDisconnectRef.current.cancel();
+    };
+  }, [isLoggedIn, password]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -181,7 +209,7 @@ export default function App() {
   };
 
   const handleDeleteMessage = (id) => setMessages(messages.filter(msg => msg.id !== id));
-  const handleClearChat = () => { if (window.confirm("Xác nhận xóa bộ nhớ hiển thị cục bộ?")) setMessages([]); };
+  const handleClearChat = () => { if (window.confirm("Xác nhận lệnh xóa bộ nhớ đệm cục bộ?")) setMessages([]); };
   const handleBlockUser = (senderName) => {
     if (senderName !== (nickname || username) && !blockedUsers.includes(senderName)) {
       if (window.confirm(`Xác nhận chặn ID: ${senderName}?`)) setBlockedUsers(prev => [...prev, senderName]);
@@ -194,7 +222,6 @@ export default function App() {
     return 'bg-gray-50 text-gray-900 border-gray-200';
   };
 
-  // Lọc và trộn tin nhắn + thông báo hệ thống theo đúng trình tự thời gian
   const filteredMessages = messages.filter(msg => msg.text.toLowerCase().includes(searchQuery.toLowerCase()));
   const displayMessages = [...filteredMessages, ...systemLogs].sort((a, b) => a.timestamp - b.timestamp);
 
@@ -301,18 +328,16 @@ export default function App() {
           )}
           
           {displayMessages.map((msg) => {
-            // HIỂN THỊ THÔNG BÁO VÀO/RA KHỎI PHÒNG
             if (msg.type === 'system') {
               return (
                 <div key={msg.id} className="flex justify-center my-4 animate-fade-in-up">
-                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[11px] px-4 py-1.5 rounded-full font-medium backdrop-blur-sm shadow-sm">
+                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[10px] px-3 py-1 rounded-full font-semibold uppercase tracking-wider backdrop-blur-sm shadow-sm border border-gray-300/30">
                     {msg.text}
                   </span>
                 </div>
               );
             }
 
-            // HIỂN THỊ TIN NHẮN BÌNH THƯỜNG
             return (
               <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group animate-fade-in-up`}>
                 {!msg.isMine && (
