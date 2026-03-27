@@ -48,63 +48,56 @@ export default function App() {
   
   const messagesEndRef = useRef(null);
   const roomDisconnectRef = useRef(null);
-  const currentCountRef = useRef(0);
-  const prefsRef = useRef({ isMuted, selectedSound, blockedUsers, nickname, username });
 
+  // MỚI: Gom toàn bộ cài đặt cá nhân vào Kho chứa ngầm để không làm gián đoạn mạng
+  const prefsRef = useRef({ isMuted, selectedSound, blockedUsers, nickname, username });
   useEffect(() => {
     prefsRef.current = { isMuted, selectedSound, blockedUsers, nickname, username };
   }, [isMuted, selectedSound, blockedUsers, nickname, username]);
 
+  // GIAO THỨC LIÊN MẠNG: Chỉ chạy lại khi đăng nhập hoặc đổi phòng
   useEffect(() => {
     if (!isLoggedIn || !password) return;
 
     const roomId = CryptoJS.SHA256(password).toString();
-    const myId = username; 
+    const myId = username; // Dùng username đăng nhập làm ID cố định để tránh lỗi radar
     
     const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
     const presenceRef = ref(db, `rooms/${roomId}/presence`);
     const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
 
-    // Thiết lập phiên kết nối nội bộ
+    let currentCount = 0; // Biến bí mật đếm số người trong phòng
+
+    // 1. Ghi danh vào phòng và gài bom hẹn giờ (phòng hờ rớt mạng)
     set(myPresenceRef, true);
     onDisconnect(myPresenceRef).remove();
-    roomDisconnectRef.current = onDisconnect(roomMsgRef);
 
-    // Ghi nhận trạng thái tham gia của các thực thể khác
+    // 2. Radar theo dõi người ra vào
     const unsubJoin = onChildAdded(presenceRef, (snap) => {
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { 
-          id: `join-${snap.key}-${Date.now()}`, 
-          type: 'system', 
-          timestamp: Date.now(), 
-          text: `Truy cập thiết lập: ID ${snap.key} vừa tham gia phiên bản mã hóa.` 
-        }]);
+        setSystemLogs(prev => [...prev, { id: `join-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `👋 ${snap.key} vừa tham gia phòng bí mật.` }]);
       }
     });
 
-    // Ghi nhận trạng thái ngắt kết nối
     const unsubLeave = onChildRemoved(presenceRef, (snap) => {
       if (snap.key !== myId) {
-        setSystemLogs(prev => [...prev, { 
-          id: `leave-${snap.key}-${Date.now()}`, 
-          type: 'system', 
-          timestamp: Date.now(), 
-          text: `Truy cập ngắt: ID ${snap.key} đã thoát khỏi phiên bản.` 
-        }]);
+        setSystemLogs(prev => [...prev, { id: `leave-${snap.key}-${Date.now()}`, type: 'system', timestamp: Date.now(), text: `🚪 ${snap.key} đã ngắt kết nối và rời đi.` }]);
       }
     });
 
-    // Giám sát tổng lưu lượng truy cập để kích hoạt lệnh hủy dữ liệu
+    // 3. Hệ thống đếm người và kích hoạt bom
+    roomDisconnectRef.current = onDisconnect(roomMsgRef);
+    
     const unsubPresence = onValue(presenceRef, (snap) => {
-      currentCountRef.current = snap.size; 
-      if (currentCountRef.current <= 1) {
-        roomDisconnectRef.current.remove(); 
+      currentCount = snap.size; 
+      if (currentCount < 1) {
+        roomDisconnectRef.current.remove(); // Bật chế độ tự hủy
       } else {
-        roomDisconnectRef.current.cancel(); 
+        roomDisconnectRef.current.cancel(); // Tắt chế độ tự hủy khi có 2 người trở lên
       }
     });
 
-    // Lắng nghe và giải mã luồng văn bản
+    // 4. Lắng nghe tin nhắn mới
     onValue(roomMsgRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
@@ -147,25 +140,29 @@ export default function App() {
       }
     });
 
-    // Thực thi dọn dẹp bộ nhớ tức thời khi trình duyệt đóng phiên bản
+    // 5. TUYỆT CHIÊU XÓA NGAY LẬP TỨC: Bắt sự kiện khi TS bấm dấu X tắt tab web hoặc F5
     const handleUnload = () => {
-      if (currentCountRef.current <= 1) {
+      if (currentCount <= 1) {
         remove(roomMsgRef);
+        remove(presenceRef);
       }
       remove(myPresenceRef);
     };
     window.addEventListener('beforeunload', handleUnload);
 
+    // 6. DỌN DẸP SẠCH SẼ KHI THOÁT RA (GỠ COMPONENT)
     return () => {
       off(roomMsgRef);
       off(presenceRef);
       window.removeEventListener('beforeunload', handleUnload);
       
-      if (currentCountRef.current <= 1) {
+      // Xóa thẳng tay không cần chờ Firebase
+      if (currentCount <= 1) {
         remove(roomMsgRef);
+        remove(presenceRef);
       }
       remove(myPresenceRef);
-      if (roomDisconnectRef.current) roomDisconnectRef.current.cancel();
+      roomDisconnectRef.current.cancel();
     };
   }, [isLoggedIn, password]);
 
@@ -209,7 +206,7 @@ export default function App() {
   };
 
   const handleDeleteMessage = (id) => setMessages(messages.filter(msg => msg.id !== id));
-  const handleClearChat = () => { if (window.confirm("Xác nhận lệnh xóa bộ nhớ đệm cục bộ?")) setMessages([]); };
+  const handleClearChat = () => { if (window.confirm("Xác nhận xóa bộ nhớ hiển thị cục bộ?")) setMessages([]); };
   const handleBlockUser = (senderName) => {
     if (senderName !== (nickname || username) && !blockedUsers.includes(senderName)) {
       if (window.confirm(`Xác nhận chặn ID: ${senderName}?`)) setBlockedUsers(prev => [...prev, senderName]);
@@ -331,7 +328,7 @@ export default function App() {
             if (msg.type === 'system') {
               return (
                 <div key={msg.id} className="flex justify-center my-4 animate-fade-in-up">
-                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[10px] px-3 py-1 rounded-full font-semibold uppercase tracking-wider backdrop-blur-sm shadow-sm border border-gray-300/30">
+                  <span className="bg-gray-200/70 dark:bg-gray-800/70 text-gray-600 dark:text-gray-400 text-[11px] px-4 py-1.5 rounded-full font-medium backdrop-blur-sm shadow-sm">
                     {msg.text}
                   </span>
                 </div>
