@@ -66,55 +66,49 @@ export default function App() {
     onValue(offsetRef, (snap) => { serverTimeOffsetRef.current = snap.val() || 0; });
 
     const roomId = CryptoJS.SHA256(password).toString();
-    const mySessionId = sessionRef.current; 
+    const myId = sessionRef.current; 
     
     const roomMsgRef = ref(db, `rooms/${roomId}/messages`);
     const presenceRef = ref(db, `rooms/${roomId}/presence`);
-    const myPresenceRef = ref(db, `rooms/${roomId}/presence/${mySessionId}`);
+    const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
 
-    // 1. Đẩy tên lên Firebase (Dùng sessionRef.current làm ID duy nhất)
-    const myName = String(nickname || username || "Thành viên HUB");
-    const myId = sessionRef.current; 
-    
-    set(myPresenceRef, myName);
+    // Đẩy tên thật lên Firebase
+    const myDisplayName = String(nickname || username || "Thành viên HUB");
+    set(myPresenceRef, myDisplayName);
     onDisconnect(myPresenceRef).remove();
+    roomDisconnectRef.current = onDisconnect(roomMsgRef); 
 
-    // 2. Lắng nghe người mới
+    // Lắng nghe người mới vào
     const unsubJoin = onChildAdded(presenceRef, (snap) => {
       const userVal = snap.val();
-      const userId = snap.key;
-
-      // CHỐT CHẶN: Chỉ hiện nếu ID người mới khác hoàn toàn ID của mình
-      if (userId !== myId) {
-        // Kiểm tra xem có phải dữ liệu cũ (true) không, nếu là tên thật mới hiện
-        const displayName = (userVal === true || userVal === "true") ? "Người dùng ẩn danh" : userVal;
-        
+      if (snap.key !== myId && userVal !== true && userVal !== "true") {
+        const globalTime = Date.now() + serverTimeOffsetRef.current;
         setSystemLogs(prev => [...prev, { 
-          id: `join-${userId}-${Date.now()}`, 
+          id: `join-${snap.key}-${globalTime}`, 
           type: 'system', 
-          timestamp: Date.now(), 
-          text: `👋 ${displayName} vừa tham gia phòng bí mật.` 
+          timestamp: globalTime, 
+          text: `👋 ${userVal} vừa tham gia phòng bí mật.` 
         }]);
       }
     });
 
-    // 3. Lắng nghe người rời đi
+    // Lắng nghe người rời đi
     const unsubLeave = onChildRemoved(presenceRef, (snap) => {
       const userVal = snap.val();
-      if (snap.key !== myId) {
-        const displayName = (userVal === true || userVal === "true") ? "Người dùng ẩn danh" : userVal;
+      if (snap.key !== myId && userVal !== true && userVal !== "true") {
+        const globalTime = Date.now() + serverTimeOffsetRef.current;
         setSystemLogs(prev => [...prev, { 
-          id: `leave-${snap.key}-${Date.now()}`, 
+          id: `leave-${snap.key}-${globalTime}`, 
           type: 'system', 
-          timestamp: Date.now(), 
-          text: `🚪 ${displayName} đã rời đi.` 
+          timestamp: globalTime, 
+          text: `🚪 ${userVal} đã rời đi.` 
         }]);
       }
     });
 
-    const unsubPresence = onValue(presenceRef, (snap) => {
-      const currentCount = snap.size; 
-      if (currentCount <= 1) {
+    onValue(presenceRef, (snap) => {
+      presenceCountRef.current = snap.size; 
+      if (snap.size <= 1 && snap.hasChild(myId)) {
         roomDisconnectRef.current.remove(); 
       } else {
         roomDisconnectRef.current.cancel(); 
@@ -143,9 +137,7 @@ export default function App() {
               timestamp: parsedTime,
               isMine: msgData.sender === currentMyId || msgData.sender === currentUn
             });
-          } catch (error) {
-             // Bỏ qua tin nhắn không giải mã được
-          }
+          } catch (error) {}
         }
       });
 
@@ -177,7 +169,6 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, systemLogs]);
 
-  // FIX 3: Làm sạch dữ liệu đầu vào khi login
   const handleLogin = (e) => {
     e.preventDefault();
     if (username.trim() && password.trim()) {
@@ -228,16 +219,16 @@ export default function App() {
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4 font-sans">
-        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md text-center">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md text-center transform transition-all hover:scale-[1.01]">
           <div className="flex justify-center mb-6">
             <img src="/assets/logo.png" alt="HUB Logo" className="w-24 h-24 object-contain" onError={(e) => { e.target.src = 'https://via.placeholder.com/100?text=HUB'; }} />
           </div>
-          <h1 className="text-xl font-bold text-blue-900 mb-1">ĐẠI HỌC NGÂN HÀNG TP.HCM</h1>
+          <h1 className="text-xl font-bold text-blue-900 mb-1 uppercase">Đại học Ngân hàng TP.HCM</h1>
           <p className="text-xs font-bold mb-8 text-blue-500 uppercase tracking-widest">Hệ thống nhắn tin nội bộ</p>
           <form onSubmit={handleLogin} className="space-y-4">
-            <input type="text" placeholder="Định danh người dùng" className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={username} onChange={(e) => setUsername(e.target.value)} required />
-            <input type="password" placeholder="Mật mã phòng chat" className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            <button type="submit" className="w-full bg-blue-700 text-white py-3 rounded-xl font-bold hover:bg-blue-800 transition-all shadow-lg">Bắt đầu phiên làm việc</button>
+            <input type="text" placeholder="Định danh người dùng" className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" value={username} onChange={(e) => setUsername(e.target.value)} required />
+            <input type="password" placeholder="Mật mã phòng chat" className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <button type="submit" className="w-full bg-blue-700 text-white py-3.5 rounded-xl font-bold hover:bg-blue-800 transition-all shadow-lg active:scale-95">Truy cập hệ thống</button>
           </form>
           <div className="mt-6 flex items-center justify-center gap-2 text-[10px] text-green-600 font-bold uppercase">
             <Shield size={14} /> Bảo mật đa tầng AES-256
@@ -248,8 +239,8 @@ export default function App() {
   }
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col font-sans ${getThemeClass()}`}>
-      <header className="p-3 border-b flex justify-between items-center bg-white/10 backdrop-blur-md z-50">
+    <div className={`h-screen overflow-hidden flex flex-col font-sans ${getThemeClass()} transition-colors duration-200`}>
+      <header className="p-3 border-b flex justify-between items-center bg-white/10 backdrop-blur-md z-50 shadow-sm">
         <div className="flex items-center gap-3">
           <img src={avatar} className="w-10 h-10 rounded-full border-2 border-white shadow-sm object-cover" alt="avatar" />
           <div>
@@ -266,27 +257,53 @@ export default function App() {
             <Search size={12} className="absolute left-3 top-2.5 opacity-40" />
             <input type="text" placeholder="Tìm tin nhắn..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-8 pr-3 py-1.5 text-[11px] border rounded-full bg-white/50 w-32 focus:w-48 transition-all outline-none" />
           </div>
-          <button onClick={() => setTheme('light')} className="p-1.5 hover:bg-gray-200/50 rounded-full"><Sun size={16} /></button>
-          <button onClick={() => setTheme('dark')} className="p-1.5 hover:bg-gray-200/50 rounded-full"><Moon size={16} /></button>
-          <button onClick={() => setTheme('eyecare')} className="p-1.5 hover:bg-gray-200/50 rounded-full"><Eye size={16} /></button>
+          <button onClick={() => setTheme('light')} className="p-1.5 hover:bg-gray-200/50 rounded-full transition-colors"><Sun size={16} /></button>
+          <button onClick={() => setTheme('dark')} className="p-1.5 hover:bg-gray-200/50 rounded-full transition-colors"><Moon size={16} /></button>
+          <button onClick={() => setTheme('eyecare')} className="p-1.5 hover:bg-gray-200/50 rounded-full transition-colors text-amber-600"><Eye size={16} /></button>
           <div className="relative">
-            <button onClick={() => setShowSettings(!showSettings)} className="p-1.5 hover:bg-gray-200/50 rounded-full"><MoreVertical size={18} /></button>
+            <button onClick={() => setShowSettings(!showSettings)} className="p-1.5 hover:bg-gray-200/50 rounded-full transition-colors"><MoreVertical size={18} /></button>
             {showSettings && (
-              <div className="absolute right-0 mt-2 w-64 bg-white text-gray-800 border shadow-2xl rounded-xl p-4 z-[100] text-xs">
-                <p className="font-bold border-b pb-2 mb-3 text-blue-600">TÙY CHỈNH CÁ NHÂN</p>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center"><span>Màu tin nhắn:</span><input type="color" value={msgBgColor} onChange={(e) => setMsgBgColor(e.target.value)} className="w-6 h-6 rounded cursor-pointer border-none" /></div>
+              <div className="absolute right-0 mt-3 w-72 bg-white text-gray-800 border shadow-2xl rounded-xl p-5 z-[100] text-xs animate-in fade-in zoom-in duration-200">
+                <p className="font-bold border-b pb-2 mb-4 text-blue-600 tracking-wide uppercase">Cấu hình cá nhân</p>
+                <div className="space-y-5">
+                  <div className="flex justify-between items-center"><span className="font-semibold">Màu tin nhắn:</span><input type="color" value={msgBgColor} onChange={(e) => setMsgBgColor(e.target.value)} className="w-8 h-8 rounded-lg cursor-pointer border-none shadow-sm" /></div>
                   <div className="flex justify-between items-center">
-                    <span>Âm báo:</span>
-                    <button onClick={() => setIsMuted(!isMuted)} className={`p-1 rounded ${!isMuted ? 'text-green-600' : 'text-red-600'}`}>
+                    <span className="font-semibold text-xs">Cảnh báo âm thanh:</span>
+                    <button onClick={() => setIsMuted(!isMuted)} className={`p-2 rounded-lg transition-colors ${!isMuted ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
                       {!isMuted ? <Volume2 size={16} /> : <VolumeX size={16} />}
                     </button>
                   </div>
-                  <div className="max-h-24 overflow-y-auto grid grid-cols-5 gap-1 p-1 border rounded bg-gray-50">
-                    {AVATARS.map((img, idx) => <img key={idx} src={img} onClick={() => setAvatar(img)} className={`w-full aspect-square object-cover rounded cursor-pointer border-2 ${avatar === img ? 'border-blue-500' : 'border-transparent'}`} alt="avt" />)}
+
+                  {/* KHÔI PHỤC CHỖ CHỌN ÂM THANH NÈ TS */}
+                  {!isMuted && (
+                    <div className="grid grid-cols-5 gap-1 pt-1">
+                      {SOUNDS.map((snd, idx) => (
+                        <button key={idx} onClick={() => { setSelectedSound(snd); new Audio(snd).play().catch(()=>{}); }} 
+                        className={`py-1.5 text-[9px] font-bold rounded border ${selectedSound === snd ? 'bg-blue-600 text-white border-blue-700 shadow-inner' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}>
+                          {idx + 1}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div>
+                    <span className="block mb-2 font-semibold text-xs">Avatar định danh:</span>
+                    <div className="max-h-24 overflow-y-auto grid grid-cols-5 gap-1.5 p-2 border rounded-lg bg-gray-50 shadow-inner">
+                      {AVATARS.map((img, idx) => <img key={idx} src={img} onClick={() => setAvatar(img)} className={`w-full aspect-square object-cover rounded-md cursor-pointer border-2 transition-transform hover:scale-105 ${avatar === img ? 'border-blue-500 ring-2 ring-blue-200' : 'border-transparent'}`} alt="avt" />)}
+                    </div>
                   </div>
-                  <button onClick={handleClearChat} className="w-full py-2 text-red-600 font-bold border-t mt-2 flex items-center justify-center gap-2 hover:bg-red-50 rounded">
-                    <Trash2 size={14} /> Xóa lịch sử tạm thời
+
+                  {/* KHÔI PHỤC CHỖ CHỌN BACKGROUND NÈ TS */}
+                  <div>
+                    <span className="block mb-2 font-semibold text-xs">Phông nền hiển thị:</span>
+                    <div className="max-h-24 overflow-y-auto grid grid-cols-4 gap-1.5 p-2 border rounded-lg bg-gray-50 shadow-inner">
+                      <div onClick={() => setChatBg('')} className="w-full aspect-video bg-gray-300 rounded-md cursor-pointer border-2 border-transparent hover:bg-gray-400 flex items-center justify-center text-[8px] font-bold text-gray-600">Trống</div>
+                      {BACKGROUNDS.map((bg, idx) => <img key={idx} src={bg} onClick={() => setChatBg(`url(${bg})`)} className={`w-full aspect-video object-cover rounded-md cursor-pointer border-2 transition-opacity hover:opacity-80 ${chatBg === `url(${bg})` ? 'border-blue-500' : 'border-transparent'}`} alt="bg" />)}
+                    </div>
+                  </div>
+
+                  <button onClick={handleClearChat} className="w-full py-2.5 text-red-600 font-bold border-t mt-2 flex items-center justify-center gap-2 hover:bg-red-50 rounded-lg transition-colors">
+                    <Trash2 size={14} /> Dọn dẹp dữ liệu tạm
                   </button>
                 </div>
               </div>
@@ -296,7 +313,7 @@ export default function App() {
       </header>
 
       <main 
-        className="flex-1 overflow-y-auto p-4 space-y-4"
+        className="flex-1 overflow-y-auto p-4 space-y-5"
         style={{ 
           backgroundImage: chatBg, backgroundSize: 'cover', backgroundPosition: 'center',
           backgroundColor: theme === 'dark' ? '#111827' : (theme === 'eyecare' ? '#e8dfc8' : '#ffffff')
@@ -305,30 +322,31 @@ export default function App() {
         {displayMessages.map((msg) => {
           if (msg.type === 'system') {
             return (
-              <div key={msg.id} className="flex justify-center my-2">
-                <span className="bg-black/5 dark:bg-white/5 text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest opacity-60">
+              <div key={msg.id} className="flex justify-center my-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <span className="bg-black/10 dark:bg-white/10 backdrop-blur-md text-[9px] px-3.5 py-1.5 rounded-full font-bold uppercase tracking-widest opacity-70 border border-white/10">
                   {msg.text}
                 </span>
               </div>
             );
           }
           return (
-            <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group items-end gap-2 animate-fade-in-up`}>
-              {!msg.isMine && <img src={msg.senderAvatar} className="w-8 h-8 rounded-full shadow-sm" alt="v" />}
+            <div key={msg.id} className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'} group items-end gap-2 animate-in fade-in slide-in-from-bottom-3 duration-300`}>
+              {!msg.isMine && <img src={msg.senderAvatar} className="w-9 h-9 rounded-full shadow-md border border-white/20 object-cover" alt="v" />}
               <div className={`flex flex-col max-w-[80%] ${msg.isMine ? 'items-end' : 'items-start'}`}>
-                {!msg.isMine && <span className="text-[10px] font-bold mb-1 ml-1 opacity-50">{msg.sender}</span>}
+                {!msg.isMine && <span className="text-[10px] font-bold mb-1 ml-1 opacity-50 tracking-wide uppercase">{msg.sender}</span>}
                 <div 
-                  className="p-3 rounded-2xl text-sm shadow-sm relative group"
+                  className="p-3.5 rounded-2xl text-sm shadow-sm relative group transition-all hover:shadow-md"
                   style={{ 
                     backgroundColor: msg.isMine ? msgBgColor : (theme === 'dark' ? '#374151' : '#ffffff'),
                     color: msg.isMine ? '#fff' : 'inherit',
-                    borderRadius: msg.isMine ? '18px 18px 2px 18px' : '18px 18px 18px 2px'
+                    borderRadius: msg.isMine ? '20px 20px 4px 20px' : '20px 20px 20px 4px',
+                    border: msg.isMine ? 'none' : '1px solid rgba(0,0,0,0.05)'
                   }}
                 >
-                  <p className="whitespace-pre-wrap break-words">{msg.text}</p>
+                  <p className="whitespace-pre-wrap break-words leading-relaxed">{msg.text}</p>
                   <button 
                     onClick={() => handleDeleteMessage(msg.id)} 
-                    className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-all"
+                    className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-md hover:bg-red-600"
                   >
                     <Trash2 size={10} />
                   </button>
@@ -340,20 +358,20 @@ export default function App() {
         <div ref={messagesEndRef} />
       </main>
 
-      <footer className="p-4 border-t bg-white/5 backdrop-blur-md">
+      <footer className="p-4 border-t bg-white/5 backdrop-blur-md z-10">
         <form onSubmit={handleSendMessage} className="flex gap-2 max-w-4xl mx-auto">
           <input 
             type="text" value={inputMsg} onChange={(e) => setInputMsg(e.target.value)} 
-            placeholder="Gửi tin nhắn được mã hóa..." 
-            className="flex-1 px-5 py-3 rounded-full border bg-white/80 focus:ring-2 focus:ring-blue-500 outline-none text-sm shadow-inner" 
+            placeholder="Gửi tin nhắn bảo mật AES-256..." 
+            className="flex-1 px-5 py-3 rounded-full border bg-white/90 focus:ring-2 focus:ring-blue-500 outline-none text-sm shadow-inner transition-all focus:bg-white" 
           />
-          <button type="submit" className="bg-blue-600 text-white p-3 rounded-full hover:bg-blue-700 transition-transform active:scale-95 shadow-md">
-            <Send size={18} />
+          <button type="submit" className="bg-blue-600 text-white p-3 rounded-full hover:bg-blue-700 transition-all active:scale-90 shadow-lg flex items-center justify-center">
+            <Send size={20} />
           </button>
         </form>
-        <div className="mt-4 flex justify-between items-center text-[9px] opacity-40 font-bold px-4">
-           <span>HUB DATA SCIENCE - SECURE HUB v2.0</span>
-           <span>AES-256 E2EE ACTIVE</span>
+        <div className="mt-4 flex justify-between items-center text-[9px] opacity-40 font-bold px-4 tracking-tighter">
+           <span>HUB DATA SCIENCE - SECURE HUB v2.5</span>
+           <span className="flex items-center gap-1"><Shield size={10} /> END-TO-END ENCRYPTED</span>
         </div>
       </footer>
     </div>
