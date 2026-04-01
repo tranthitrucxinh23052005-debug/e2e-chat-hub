@@ -72,14 +72,12 @@ export default function App() {
     const presenceRef = ref(db, `rooms/${roomId}/presence`);
     const myPresenceRef = ref(db, `rooms/${roomId}/presence/${myId}`);
 
-    // Đẩy tên thật lên Firebase
     const myDisplayName = String(nickname || username || "Thành viên HUB");
     set(myPresenceRef, myDisplayName);
     onDisconnect(myPresenceRef).remove();
     roomDisconnectRef.current = onDisconnect(roomMsgRef); 
 
-    // Lắng nghe người mới vào
-    const unsubJoin = onChildAdded(presenceRef, (snap) => {
+    onChildAdded(presenceRef, (snap) => {
       const userVal = snap.val();
       if (snap.key !== myId && userVal !== true && userVal !== "true") {
         const globalTime = Date.now() + serverTimeOffsetRef.current;
@@ -92,8 +90,7 @@ export default function App() {
       }
     });
 
-    // Lắng nghe người rời đi
-    const unsubLeave = onChildRemoved(presenceRef, (snap) => {
+    onChildRemoved(presenceRef, (snap) => {
       const userVal = snap.val();
       if (snap.key !== myId && userVal !== true && userVal !== "true") {
         const globalTime = Date.now() + serverTimeOffsetRef.current;
@@ -126,6 +123,13 @@ export default function App() {
 
         if (msgData && !blockedUsers.includes(msgData.sender)) {
           try {
+            // KHÔI PHỤC CONSOLE LOG CHO DỮ LIỆU ĐẾN
+            console.log("%c[INBOUND] - DỮ LIỆU TIẾP NHẬN TỪ MÁY CHỦ", "color: #047857; font-weight: bold; font-size: 11px;");
+            console.log(`SENDER     : ${msgData.sender}`);
+            console.log(`TIMESTAMP  : ${msgData.timestamp}`);
+            console.log(`AES-256    : ${msgData.text}`);
+            console.log("--------------------------------------------------");
+
             const decryptedText = decryptMessage(msgData.text, password);
             let parsedTime = (typeof msgData.timestamp === 'number') ? msgData.timestamp : Date.now(); 
 
@@ -193,6 +197,12 @@ export default function App() {
       text: encryptedText,
       timestamp: globalTimestamp 
     };
+
+    // KHÔI PHỤC CONSOLE LOG CHO DỮ LIỆU ĐI
+    console.log("%c[OUTBOUND] - DỮ LIỆU MÃ HÓA ĐẦU RA", "color: #b45309; font-weight: bold; font-size: 11px;");
+    console.log(`SENDER     : ${msgPayload.sender}`);
+    console.log(`AES-256    : ${msgPayload.text}`);
+    console.log("--------------------------------------------------");
 
     const roomId = CryptoJS.SHA256(password).toString();
     push(ref(db, `rooms/${roomId}/messages`), msgPayload);
@@ -274,7 +284,6 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* KHÔI PHỤC CHỖ CHỌN ÂM THANH NÈ TS */}
                   {!isMuted && (
                     <div className="grid grid-cols-5 gap-1 pt-1">
                       {SOUNDS.map((snd, idx) => (
@@ -293,7 +302,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* KHÔI PHỤC CHỖ CHỌN BACKGROUND NÈ TS */}
                   <div>
                     <span className="block mb-2 font-semibold text-xs">Phông nền hiển thị:</span>
                     <div className="max-h-24 overflow-y-auto grid grid-cols-4 gap-1.5 p-2 border rounded-lg bg-gray-50 shadow-inner">
